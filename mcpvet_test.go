@@ -81,14 +81,14 @@ func TestGenerateCasesCoversTheImportantShapes(t *testing.T) {
 		case strings.HasPrefix(c.Name, "missing:"), strings.HasPrefix(c.Name, "wrongtype:"),
 			strings.HasPrefix(c.Name, "oversize:"), strings.HasPrefix(c.Name, "badenum:"),
 			strings.HasSuffix(c.Name, ":above_max"), strings.HasSuffix(c.Name, ":below_min"):
-			if c.Valid {
-				t.Errorf("case %q should be marked invalid", c.Name)
+			if c.Expect != ExpectReject {
+				t.Errorf("case %q should expect rejection, got %v", c.Name, c.Expect)
 			}
 		}
 	}
-	// Valid cases must satisfy required fields.
+	// Cases mcpvet asserts the server must accept have to satisfy required fields.
 	for _, c := range cases {
-		if c.Valid {
+		if c.Expect == ExpectAccept {
 			if _, ok := c.Args["city"]; !ok {
 				t.Errorf("valid case %q dropped a required field", c.Name)
 			}

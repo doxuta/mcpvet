@@ -6,8 +6,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -31,7 +33,14 @@ func text(s string) *mcp.CallToolResult {
 }
 
 func main() {
-	s := mcp.NewServer(&mcp.Implementation{Name: "testserver", Version: "v1.0.0"}, nil)
+	// A deliberately tiny page size when padding tools, so tests exercise a
+	// genuinely multi-page tools/list (the SDK default of 1000 would hide any
+	// pagination bug behind a single page).
+	var opts *mcp.ServerOptions
+	if os.Getenv("MCPVET_MANY_TOOLS") != "" {
+		opts = &mcp.ServerOptions{PageSize: 5}
+	}
+	s := mcp.NewServer(&mcp.Implementation{Name: "testserver", Version: "v1.0.0"}, opts)
 
 	desc := "Greet a person by name."
 	if os.Getenv("MCPVET_DEMO_DRIFT") != "" {
@@ -61,6 +70,31 @@ func main() {
 			time.Sleep(30 * time.Second)
 			return text("finally"), nil, nil
 		})
+
+	// Extra tools on demand, so tests can prove the client paginates.
+	if n := os.Getenv("MCPVET_MANY_TOOLS"); n != "" {
+		count, _ := strconv.Atoi(n)
+		for i := 0; i < count; i++ {
+			mcp.AddTool(s, &mcp.Tool{Name: fmt.Sprintf("filler_%02d", i), Description: "padding tool"},
+				func(ctx context.Context, req *mcp.CallToolRequest, a greetArgs) (*mcp.CallToolResult, any, error) {
+					return text("ok"), nil, nil
+				})
+		}
+	}
+
+	// A tool that errors on every input, including input its own schema accepts.
+	if os.Getenv("MCPVET_ALWAYS_ERROR") != "" {
+		s.AddTool(&mcp.Tool{
+			Name:        "always_error",
+			Description: "Fails on every call, even schema-valid ones.",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"q": map[string]any{"type": "string"}},
+			},
+		}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "always fails"}}}, nil
+		})
+	}
 
 	if err := s.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)

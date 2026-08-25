@@ -3,9 +3,9 @@ package mcpvet
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
-	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -76,9 +76,15 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 		info = ServerInfo{Name: init.ServerInfo.Name, Version: init.ServerInfo.Version}
 	}
 
-	listed, err := session.ListTools(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("mcpvet: list tools: %w", err)
+	// Paginate: a single ListTools call returns only the first page, which
+	// would let a server hide tools from the lock, the drift gate and the
+	// fuzzer. The SDK's iterator follows nextCursor to exhaustion.
+	var tools []*mcp.Tool
+	for t, err := range session.Tools(ctx, nil) {
+		if err != nil {
+			return nil, fmt.Errorf("mcpvet: list tools: %w", err)
+		}
+		tools = append(tools, t)
 	}
 
 	skip := map[string]bool{}
@@ -87,7 +93,7 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 	}
 
 	var surfaces []ToolSurface
-	for _, t := range listed.Tools {
+	for _, t := range tools {
 		surfaces = append(surfaces, ToolSurface{
 			Name:        t.Name,
 			Description: t.Description,
@@ -128,31 +134,50 @@ func runCase(ctx context.Context, session *mcp.ClientSession, tool string, c Cas
 			fmt.Sprintf("no response within %s — an agent would stall here", timeout), true}
 	}
 	if err != nil {
-		// A transport-level error means the server broke the protocol or died;
-		// a tool-level error is a normal rejection.
-		if isProtocolError(err) {
+		// Transport death (the session is gone) is a crash; a JSON-RPC error
+		// response means the server is alive and answered, which for a
+		// schema-invalid case is the correct behaviour.
+		if sessionDied(ctx, session, err) {
 			return &Finding{tool, c.Name, "crash",
 				fmt.Sprintf("server broke the session: %v", err), true}
 		}
-		if c.Valid {
-			return &Finding{tool, c.Name, "protocol_error",
+		if c.Expect == ExpectAccept {
+			return &Finding{tool, c.Name, "rejected_valid",
 				fmt.Sprintf("schema-valid input rejected at protocol level: %v", err), false}
 		}
-		return nil // invalid input correctly refused
+		return nil // rejected, as the schema requires (or allows)
 	}
-	if !c.Valid && (res == nil || !res.IsError) {
-		return &Finding{tool, c.Name, "accepted_invalid",
-			"server accepted input its own schema forbids", false}
+	switch c.Expect {
+	case ExpectReject:
+		if res == nil || !res.IsError {
+			return &Finding{tool, c.Name, "accepted_invalid",
+				"server accepted input its own schema forbids", false}
+		}
+	case ExpectAccept:
+		// A handler that errors on input its own schema accepts is broken in
+		// the direction that silently passed before this check existed.
+		if res != nil && res.IsError {
+			return &Finding{tool, c.Name, "rejected_valid",
+				"server returned a tool error for input its own schema accepts", false}
+		}
 	}
 	return nil
 }
 
-func isProtocolError(err error) bool {
-	s := err.Error()
-	return strings.Contains(s, "connection") ||
-		strings.Contains(s, "EOF") ||
-		strings.Contains(s, "closed") ||
-		strings.Contains(s, "broken pipe")
+// sessionDied reports whether the session itself is gone, as opposed to the
+// server answering with an error. It asks the session directly instead of
+// matching English substrings in the message: classifying by text misreports
+// an ordinary domain error ("connection refused by the database") as a crash,
+// and misses a death whose message happens not to contain the magic words.
+func sessionDied(ctx context.Context, session *mcp.ClientSession, callErr error) bool {
+	if errors.Is(callErr, mcp.ErrConnectionClosed) {
+		return true
+	}
+	// Ask the server whether it is still there. A live server answers a ping
+	// even when it has just rejected a tool call.
+	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return session.Ping(pingCtx, nil) != nil
 }
 
 // decodeSchema normalizes whatever the SDK hands back (typed schema, raw
