@@ -2,6 +2,7 @@ package mcpvet
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -142,4 +143,66 @@ func TestRejectedValidIsAFinding(t *testing.T) {
 		}
 	}
 	t.Fatalf("a tool that errors on every input was reported clean; findings: %+v", report.Findings)
+}
+
+// allOf inside a oneOf/anyOf branch, or next to one at the root, used to be
+// discarded: branches() merged the branch into the root before folding allOf,
+// and the merge drops composition keywords. The branch then generated an
+// empty "valid" case that asserted acceptance, so a server that correctly
+// rejected the missing required field was reported as a false finding.
+func TestBranchesKeepAllOf(t *testing.T) {
+	find := func(cases []Case, name string) (Case, bool) {
+		for _, c := range cases {
+			if c.Name == name {
+				return c, true
+			}
+		}
+		return Case{}, false
+	}
+
+	t.Run("allOf inside each branch", func(t *testing.T) {
+		s := mustSchema(t, `{"type":"object","oneOf":[
+			{"allOf":[{"properties":{"a":{"type":"string"}},"required":["a"]}]},
+			{"allOf":[{"properties":{"b":{"type":"integer"}},"required":["b"]}]}]}`)
+		cases := GenerateCases(s)
+		for i, field := range []string{"a", "b"} {
+			valid, ok := find(cases, fmt.Sprintf("branch%d:valid", i))
+			if !ok {
+				t.Fatalf("no valid case for branch %d: %v", i, names(cases))
+			}
+			if _, ok := valid.Args[field]; !ok {
+				t.Errorf("branch %d valid case lacks %q: %v", i, field, valid.Args)
+			}
+			if _, ok := find(cases, fmt.Sprintf("branch%d:missing:%s", i, field)); !ok {
+				t.Errorf("branch %d has no missing:%s case — its allOf was dropped: %v", i, field, names(cases))
+			}
+		}
+	})
+
+	t.Run("allOf next to oneOf at the root", func(t *testing.T) {
+		s := mustSchema(t, `{"type":"object",
+			"allOf":[{"properties":{"id":{"type":"string"}},"required":["id"]}],
+			"oneOf":[{"properties":{"a":{"type":"string"}},"required":["a"]}]}`)
+		cases := GenerateCases(s)
+		valid, ok := find(cases, "branch0:valid")
+		if !ok {
+			t.Fatalf("no branch0:valid: %v", names(cases))
+		}
+		for _, field := range []string{"id", "a"} {
+			if _, ok := valid.Args[field]; !ok {
+				t.Errorf("valid case lacks %q: %v", field, valid.Args)
+			}
+		}
+		if _, ok := find(cases, "branch0:missing:id"); !ok {
+			t.Errorf("root allOf's required field is not probed: %v", names(cases))
+		}
+	})
+}
+
+func names(cases []Case) []string {
+	out := make([]string, len(cases))
+	for i, c := range cases {
+		out[i] = c.Name
+	}
+	return out
 }

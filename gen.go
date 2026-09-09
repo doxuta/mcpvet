@@ -518,10 +518,13 @@ func (s schema) branches() []schema {
 	if len(raw) == 0 {
 		return nil
 	}
+	// Fold allOf on both sides first: mergeSchemas drops composition
+	// keywords, so merging before folding silently discards them.
+	root := mergeAllOf(s, 0)
 	var out []schema
 	for _, b := range raw {
 		if sub, ok := asSchema(b); ok {
-			out = append(out, mergeAllOf(mergeSchemas(s, sub), 0))
+			out = append(out, mergeSchemas(root, mergeAllOf(sub, 0)))
 		}
 	}
 	return out
