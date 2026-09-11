@@ -11,6 +11,7 @@
 package mcpvet
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -85,12 +86,22 @@ func (s schema) typ() string {
 }
 
 // typeLabel is how a schema's type is rendered in a fingerprint: the union
-// members when it declares several, otherwise the single (or inferred) type.
+// members when it declares several, otherwise the single type. A type that was
+// inferred rather than declared is marked with a leading "~". The distinction
+// is load-bearing: {"type":"object","properties":...} rejects a string, while
+// the same schema without "type" accepts it, so the two must not share a
+// fingerprint.
 func (s schema) typeLabel() string {
 	if ts := s.types(); len(ts) > 1 {
 		return strings.Join(ts, "|")
 	}
-	return s.typ()
+	t := s.typ()
+	// "enum" is a sentinel typ() invents, never a declared JSON type, so it
+	// already reads as inferred and needs no marker.
+	if _, declared := s.m["type"]; !declared && t != "" && t != "enum" {
+		return "~" + t
+	}
+	return t
 }
 
 func (s schema) properties() map[string]schema {
@@ -162,7 +173,10 @@ const maxSchemaDepth = 64
 // with the same fingerprint accept the same inputs. An unknown or unhandled
 // keyword therefore widens the fingerprint rather than being dropped —
 // dropping it would let a real widening be reported as a docs-only change.
-// Key order and description edits still never cause drift.
+// For the same reason values keep their JSON type (the number 1 and the string
+// "1" render differently) and an inferred type is marked "~object" rather than
+// rendering like a declared one. Key order and description edits still never
+// cause drift.
 func (s schema) fingerprint() string {
 	var b strings.Builder
 	s.writeFingerprint(&b, 0)
@@ -179,7 +193,7 @@ func (s schema) writeFingerprint(b *strings.Builder, depth int) {
 	if en := s.enum(); en != nil {
 		vals := make([]string, len(en))
 		for i, v := range en {
-			vals[i] = fmt.Sprint(v)
+			vals[i] = scalarFingerprint(v)
 		}
 		sort.Strings(vals)
 		fmt.Fprintf(b, "{enum:%s}", strings.Join(vals, ","))
@@ -266,8 +280,25 @@ func writeValueFingerprint(b *strings.Builder, key string, v any, depth int) {
 		}
 		b.WriteString(strings.Join(parts, ","))
 	default:
-		fmt.Fprintf(b, "%v", val)
+		b.WriteString(scalarFingerprint(val))
 	}
+}
+
+// scalarFingerprint renders a JSON scalar keeping its type, so that values of
+// different types never collapse to the same token: 1 and "1", true and
+// "true", null and the string "null" are distinct inputs and must stay
+// distinct here.
+//
+// The error branch is reachable only through BuildLock with a Go-constructed
+// schema, since JSON cannot express NaN or ±Inf. It still renders the value,
+// because collapsing NaN, +Inf and -Inf to one token would reintroduce inside
+// this function the exact defect it exists to remove.
+func scalarFingerprint(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("<unencodable %T %v>", v, v)
+	}
+	return string(b)
 }
 
 func sortedKeys(m map[string]any) []string {

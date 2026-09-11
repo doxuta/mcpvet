@@ -206,3 +206,64 @@ func names(cases []Case) []string {
 	}
 	return out
 }
+
+// Dropping "type":"object" widens what a schema accepts — properties and
+// required assert nothing about non-object instances — but the inferred type
+// used to render exactly like a declared one, so the CI gate classified the
+// widening as a docs-only change.
+func TestFingerprintCoversRemovedObjectType(t *testing.T) {
+	withType := mustSchema(t, `{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`)
+	noType := mustSchema(t, `{"properties":{"city":{"type":"string"}},"required":["city"]}`)
+	sa, _ := asSchema(withType)
+	sb, _ := asSchema(noType)
+	if sa.fingerprint() == sb.fingerprint() {
+		t.Errorf("dropping \"type\":\"object\" did not change the fingerprint: %s", sa.fingerprint())
+	}
+	if !hasBreakingDrift(t, withType, noType) {
+		t.Errorf("check would exit 0: a schema that now accepts non-object input is reported as non-breaking")
+	}
+}
+
+// enum members used to be rendered with fmt.Sprint, so the JSON number 1 and
+// the JSON string "1" produced the same token: retyping an enum passed the
+// gate as a docs-only change even though the two schemas accept disjoint
+// values. The same collapse applied to scalars under any other keyword.
+func TestFingerprintCoversValueTypes(t *testing.T) {
+	cases := []struct{ name, a, b string }{
+		{"enum", `{"type":"object","properties":{"n":{"enum":[1,2]}}}`, `{"type":"object","properties":{"n":{"enum":["1","2"]}}}`},
+		{"enumBool", `{"type":"object","properties":{"n":{"enum":[true]}}}`, `{"type":"object","properties":{"n":{"enum":["true"]}}}`},
+		{"const", `{"type":"object","properties":{"n":{"const":1}}}`, `{"type":"object","properties":{"n":{"const":"1"}}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			av, bv := mustSchema(t, c.a), mustSchema(t, c.b)
+			sa, _ := asSchema(av)
+			sb, _ := asSchema(bv)
+			if sa.fingerprint() == sb.fingerprint() {
+				t.Errorf("%s of numbers and of strings share a fingerprint: %s", c.name, sa.fingerprint())
+			}
+			if !hasBreakingDrift(t, av, bv) {
+				t.Errorf("check would exit 0: %s retyped from numbers to strings reported as non-breaking", c.name)
+			}
+		})
+	}
+}
+
+// hasBreakingDrift locks one tool with each schema and reports whether the
+// drift between the two locks would fail the CI gate.
+func hasBreakingDrift(t *testing.T, oldSchema, newSchema any) bool {
+	t.Helper()
+	info := ServerInfo{Name: "srv", Version: "1.0.0"}
+	old := BuildLock(info, []ToolSurface{{Name: "lookup", Description: "d", InputSchema: oldSchema}})
+	now := BuildLock(info, []ToolSurface{{Name: "lookup", Description: "d", InputSchema: newSchema}})
+	t.Logf("old shape: %q", old.Tools[0].SchemaShape)
+	t.Logf("new shape: %q", now.Tools[0].SchemaShape)
+	breaking := false
+	for _, d := range Diff(old, now) {
+		t.Logf("drift kind=%s breaking=%v detail=%s", d.Kind, d.Breaking(), d.Detail)
+		if d.Breaking() {
+			breaking = true
+		}
+	}
+	return breaking
+}
