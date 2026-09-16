@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -93,6 +94,21 @@ func main() {
 			},
 		}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "always fails"}}}, nil
+		})
+	}
+
+	// A tools/list that fails with a message of the operator's choosing. The
+	// message is server-controlled text that mcpvet does not print in its
+	// report but in its error path, so this is what lets a test drive text the
+	// server chose all the way to the terminal.
+	if msg := os.Getenv("MCPVET_HOSTILE_LIST_ERROR"); msg != "" {
+		s.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+			return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+				if method == "tools/list" {
+					return nil, errors.New(msg)
+				}
+				return next(ctx, method, req)
+			}
 		})
 	}
 

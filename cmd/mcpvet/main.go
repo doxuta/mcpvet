@@ -149,9 +149,15 @@ flags: -lock PATH  -timeout DUR  -skip tool1,tool2  -json`)
 	os.Exit(2)
 }
 
+// die is the report path's other human-facing sink, and the text it prints is
+// server-chosen too: Vet wraps whatever error a failed connect or tools/list
+// returned, and that message is the server's. So it is escaped here, at the
+// sink, and not at the two Vet return sites — that keeps %w intact for
+// errors.Is (sessionDied depends on it) and leaves a library caller the real
+// value, for the same reason -json keeps it.
 func die(err error) {
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "mcpvet:", err)
+		fmt.Fprintln(os.Stderr, "mcpvet:", mcpvet.SafeText(err.Error()))
 		os.Exit(1)
 	}
 }

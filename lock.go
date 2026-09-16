@@ -172,6 +172,12 @@ func ReadLock(path string) (Lock, error) {
 // literal, which escapes every control character and every invisible rune
 // (bidi overrides included) while still showing the operator what was sent.
 //
+// Every human-facing line mcpvet writes must go through this, and they are:
+// the text report (printReport), the `lock` success line, and die, which
+// prints the error a failed connect or tools/list returned — server text as
+// much as a tool name is. Values composed into a Drift or Finding Detail are
+// escaped where the Detail is built, so the Detail itself prints as-is.
+//
 // The -json output is deliberately not routed through this: encoding/json
 // already escapes these bytes, and a machine consumer needs the real value.
 func SafeText(s string) string {
