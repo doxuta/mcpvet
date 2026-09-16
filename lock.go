@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Lock is the snapshot of a server's tool surface — the "package-lock" for an
@@ -51,7 +53,7 @@ func BuildLock(server ServerInfo, tools []ToolSurface) Lock {
 			tl.SchemaShape = s.fingerprint()
 			tl.Required = strings.Join(s.required(), ",")
 		}
-		tl.SchemaHash = hash(canonicalJSON(t.InputSchema))
+		tl.SchemaHash = hash(jsonToken(t.InputSchema))
 		l.Tools = append(l.Tools, tl)
 	}
 	sort.Slice(l.Tools, func(i, j int) bool { return l.Tools[i].Name < l.Tools[j].Name })
@@ -66,6 +68,10 @@ type ToolSurface struct {
 }
 
 // Drift is one difference between a stored lock and the live server.
+//
+// Tool is the name the server reported, verbatim; a caller that prints it must
+// pass it through SafeText first. Detail is composed by mcpvet and every
+// server-supplied value inside it is already escaped, so it prints as-is.
 type Drift struct {
 	Tool   string `json:"tool"`
 	Kind   string `json:"kind"` // added, removed, description_changed, schema_changed, required_changed
@@ -96,7 +102,8 @@ func Diff(old, new Lock) []Drift {
 		if o.SchemaHash != t.SchemaHash {
 			detail := "input schema changed"
 			if o.SchemaShape != t.SchemaShape {
-				detail = fmt.Sprintf("input schema shape changed:\n    was: %s\n    now: %s", o.SchemaShape, t.SchemaShape)
+				detail = fmt.Sprintf("input schema shape changed:\n    was: %s\n    now: %s",
+					SafeText(o.SchemaShape), SafeText(t.SchemaShape))
 			} else {
 				detail = "input schema bytes changed but shape is equivalent (docs/annotations only)"
 			}
@@ -154,17 +161,27 @@ func ReadLock(path string) (Lock, error) {
 	return l, nil
 }
 
+// SafeText renders a string the audited server chose — a tool name, a schema
+// shape, the text of an error it returned — for a human-facing line of the
+// report. mcpvet's whole subject is a server that rewrites its own surface: a
+// server that puts a carriage return or an ANSI erase sequence in a tool name
+// can otherwise scroll the drift that reports it off the screen, and a bare
+// newline lets it forge mcpvet's own "OK" line underneath a finding. Text that
+// is entirely printable is returned unchanged, so an honest server's report
+// reads exactly as before; anything else is rendered as a quoted Go string
+// literal, which escapes every control character and every invisible rune
+// (bidi overrides included) while still showing the operator what was sent.
+//
+// The -json output is deliberately not routed through this: encoding/json
+// already escapes these bytes, and a machine consumer needs the real value.
+func SafeText(s string) string {
+	if !strings.ContainsFunc(s, func(r rune) bool { return !unicode.IsPrint(r) }) {
+		return s
+	}
+	return strconv.Quote(s)
+}
+
 func hash(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:8])
-}
-
-// canonicalJSON marshals with sorted keys (encoding/json sorts map keys), so
-// the hash is stable across runs.
-func canonicalJSON(v any) string {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Sprint(v)
-	}
-	return string(b)
 }

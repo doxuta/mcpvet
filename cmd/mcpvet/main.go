@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -57,7 +58,7 @@ func main() {
 	if mode == "lock" {
 		die(mcpvet.WriteLock(*lockPath, report.Lock))
 		fmt.Printf("mcpvet: locked %d tools from %s %s → %s\n",
-			report.ToolCount, report.Server.Name, report.Server.Version, *lockPath)
+			report.ToolCount, mcpvet.SafeText(report.Server.Name), mcpvet.SafeText(report.Server.Version), *lockPath)
 		return
 	}
 
@@ -72,38 +73,42 @@ func main() {
 	if *jsonOut {
 		json.NewEncoder(os.Stdout).Encode(report)
 	} else {
-		printReport(report, mode)
+		printReport(os.Stdout, report, mode)
 	}
 	if report.Failed() {
 		os.Exit(1)
 	}
 }
 
-func printReport(r *mcpvet.Report, mode string) {
-	fmt.Printf("mcpvet: %s %s — %d tools", r.Server.Name, r.Server.Version, r.ToolCount)
+// printReport writes the human-facing report. Every name here is a name the
+// audited server chose, so it goes through mcpvet.SafeText; the Detail fields
+// are mcpvet's own text with the server's values already escaped inside them,
+// and keep their layout.
+func printReport(w io.Writer, r *mcpvet.Report, mode string) {
+	fmt.Fprintf(w, "mcpvet: %s %s — %d tools", mcpvet.SafeText(r.Server.Name), mcpvet.SafeText(r.Server.Version), r.ToolCount)
 	if mode == "fuzz" {
-		fmt.Printf(", %d generated cases", r.CaseCount)
+		fmt.Fprintf(w, ", %d generated cases", r.CaseCount)
 	}
-	fmt.Println()
+	fmt.Fprintln(w)
 
 	if len(r.Drifts) > 0 {
-		fmt.Println("\nDRIFT vs lockfile:")
+		fmt.Fprintln(w, "\nDRIFT vs lockfile:")
 		for _, d := range r.Drifts {
 			mark := " "
 			if d.Breaking() {
 				mark = "!"
 			}
-			fmt.Printf(" %s %-24s %-20s %s\n", mark, d.Tool, d.Kind, d.Detail)
+			fmt.Fprintf(w, " %s %-24s %-20s %s\n", mark, mcpvet.SafeText(d.Tool), d.Kind, d.Detail)
 		}
 	}
 	if len(r.Findings) > 0 {
-		fmt.Println("\nFINDINGS:")
+		fmt.Fprintln(w, "\nFINDINGS:")
 		for _, f := range r.Findings {
-			fmt.Printf(" ! %-24s %-18s %s\n     case: %s\n", f.Tool, f.Kind, f.Detail, f.Case)
+			fmt.Fprintf(w, " ! %-24s %-18s %s\n     case: %s\n", mcpvet.SafeText(f.Tool), f.Kind, f.Detail, mcpvet.SafeText(f.Case))
 		}
 	}
 	if !r.Failed() {
-		fmt.Println("\nOK — tool surface matches the lockfile" + fuzzSuffix(mode))
+		fmt.Fprintln(w, "\nOK — tool surface matches the lockfile"+fuzzSuffix(mode))
 	}
 }
 

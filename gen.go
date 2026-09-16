@@ -498,8 +498,12 @@ func wrongType(s schema) (any, bool) {
 }
 
 func inEnum(en []any, v any) bool {
+	// jsonToken, not fmt.Sprint: the latter renders the number 1, the string
+	// "1" and the boolean true as the same text, so a candidate of a type the
+	// schema forbids passed for an enum member and its case was dropped.
+	want := jsonToken(v)
 	for _, e := range en {
-		if fmt.Sprint(e) == fmt.Sprint(v) {
+		if jsonToken(e) == want {
 			return true
 		}
 	}
@@ -594,7 +598,7 @@ func dedupe(in []any) []any {
 	seen := map[string]bool{}
 	var out []any
 	for _, v := range in {
-		k := fmt.Sprint(v)
+		k := jsonToken(v) // not fmt.Sprint: 1 and "1" are different field names
 		if seen[k] {
 			continue
 		}

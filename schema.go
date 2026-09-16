@@ -193,7 +193,7 @@ func (s schema) writeFingerprint(b *strings.Builder, depth int) {
 	if en := s.enum(); en != nil {
 		vals := make([]string, len(en))
 		for i, v := range en {
-			vals[i] = scalarFingerprint(v)
+			vals[i] = jsonToken(v)
 		}
 		sort.Strings(vals)
 		fmt.Fprintf(b, "{enum:%s}", strings.Join(vals, ","))
@@ -280,20 +280,23 @@ func writeValueFingerprint(b *strings.Builder, key string, v any, depth int) {
 		}
 		b.WriteString(strings.Join(parts, ","))
 	default:
-		b.WriteString(scalarFingerprint(val))
+		b.WriteString(jsonToken(val))
 	}
 }
 
-// scalarFingerprint renders a JSON scalar keeping its type, so that values of
-// different types never collapse to the same token: 1 and "1", true and
-// "true", null and the string "null" are distinct inputs and must stay
-// distinct here.
+// jsonToken renders a decoded JSON value as its canonical JSON text: sorted
+// object keys (encoding/json sorts map keys), and values that keep their type,
+// so that values of different types never collapse to the same token. 1 and
+// "1", true and "true", null and the string "null" are distinct inputs and
+// must stay distinct — both in a fingerprint and wherever mcpvet compares two
+// JSON values for identity, which is why this is the one place that renders
+// them. fmt.Sprint is not an alternative: it prints all three as the same text.
 //
-// The error branch is reachable only through BuildLock with a Go-constructed
-// schema, since JSON cannot express NaN or ±Inf. It still renders the value,
-// because collapsing NaN, +Inf and -Inf to one token would reintroduce inside
-// this function the exact defect it exists to remove.
-func scalarFingerprint(v any) string {
+// The error branch is reachable only through a Go-constructed schema, since
+// JSON cannot express NaN or ±Inf. It still renders the value, because
+// collapsing NaN, +Inf and -Inf to one token would reintroduce inside this
+// function the exact defect it exists to remove.
+func jsonToken(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Sprintf("<unencodable %T %v>", v, v)
@@ -314,12 +317,12 @@ func sortedKeys(m map[string]any) []string {
 // each bound. Absent bounds are never fabricated: callers must check hasLo and
 // hasHi.
 type numRange struct {
-	lo, hi        float64
-	hasLo, hasHi  bool
+	lo, hi         float64
+	hasLo, hasHi   bool
 	loExcl, hiExcl bool
-	integer       bool
-	multipleOf    float64
-	hasMultipleOf bool
+	integer        bool
+	multipleOf     float64
+	hasMultipleOf  bool
 }
 
 func (s schema) numRange() numRange {

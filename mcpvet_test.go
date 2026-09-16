@@ -57,12 +57,12 @@ func TestGenerateCasesCoversTheImportantShapes(t *testing.T) {
 	cases := GenerateCases(s)
 
 	want := map[string]bool{
-		"valid":                false,
-		"missing:city":         false,
-		"wrongtype:city":       false,
-		"oversize:city":        false,
-		"badenum:mode":         false,
-		"boundary:count:min":   false,
+		"valid":                    false,
+		"missing:city":             false,
+		"wrongtype:city":           false,
+		"oversize:city":            false,
+		"badenum:mode":             false,
+		"boundary:count:min":       false,
 		"boundary:count:above_max": false,
 	}
 	for _, c := range cases {

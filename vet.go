@@ -12,6 +12,11 @@ import (
 )
 
 // Finding is one problem mcpvet found while exercising a server.
+//
+// Tool is the name the server reported and Case embeds the field names from
+// its schema, both verbatim; a caller that prints them must pass them through
+// SafeText first. Detail is composed by mcpvet and already escapes any server
+// text it embeds, so it prints as-is.
 type Finding struct {
 	Tool     string `json:"tool"`
 	Case     string `json:"case"`
@@ -139,11 +144,11 @@ func runCase(ctx context.Context, session *mcp.ClientSession, tool string, c Cas
 		// schema-invalid case is the correct behaviour.
 		if sessionDied(ctx, session, err) {
 			return &Finding{tool, c.Name, "crash",
-				fmt.Sprintf("server broke the session: %v", err), true}
+				fmt.Sprintf("server broke the session: %s", SafeText(err.Error())), true}
 		}
 		if c.Expect == ExpectAccept {
 			return &Finding{tool, c.Name, "rejected_valid",
-				fmt.Sprintf("schema-valid input rejected at protocol level: %v", err), false}
+				fmt.Sprintf("schema-valid input rejected at protocol level: %s", SafeText(err.Error())), false}
 		}
 		return nil // rejected, as the schema requires (or allows)
 	}

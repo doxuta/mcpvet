@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 )
 
 // Regression tests for the defects found in the August 2026 audit. Each one
@@ -266,4 +267,92 @@ func hasBreakingDrift(t *testing.T, oldSchema, newSchema any) bool {
 		}
 	}
 	return breaking
+}
+
+// caseNamed returns the generated case with the given name.
+func caseNamed(cases []Case, name string) (Case, bool) {
+	for _, c := range cases {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return Case{}, false
+}
+
+// The generator compared enum members with fmt.Sprint, which renders the JSON
+// string "true" and the JSON boolean true as the same token. wrongType then
+// believed the boolean was an enum member and skipped it, and with the other
+// candidates ruled out by the type union the tool lost its type-confusion case
+// entirely — the one case that proves the server rejects what its schema
+// forbids. Same defect as the enum collapse fixed in the fingerprint.
+func TestWrongTypeKeepsEnumMemberTypes(t *testing.T) {
+	s := mustSchema(t, `{"type":"object","properties":{"flag":{"type":["string","number","array","object"],"enum":["true"]}}}`)
+	cases := GenerateCases(s)
+	c, ok := caseNamed(cases, "wrongtype:flag")
+	if !ok {
+		t.Fatalf("no type-confusion case for a field whose schema forbids booleans: %v", names(cases))
+	}
+	if c.Args["flag"] != true {
+		t.Errorf("wrongtype value = %#v, want the boolean true (the only type the schema rejects)", c.Args["flag"])
+	}
+}
+
+// inEnum is also what keeps a legal value out of the "must be rejected" set.
+// The string "12345" and the number 12345 are different JSON values: a schema
+// that enumerates the string still forbids the number.
+func TestInEnumSeparatesStringsFromNumbers(t *testing.T) {
+	if inEnum([]any{"12345"}, 12345) {
+		t.Error(`the number 12345 is reported as a member of the enum ["12345"]`)
+	}
+	if inEnum([]any{"true"}, true) {
+		t.Error(`the boolean true is reported as a member of the enum ["true"]`)
+	}
+	if !inEnum([]any{float64(12345)}, 12345) {
+		t.Error("the number 12345 is not recognised as a member of the enum [12345]")
+	}
+}
+
+// Merging allOf branches deduped required entries by fmt.Sprint too, so a
+// schema listing the number 1 and the string "1" kept only the first: the
+// string, the one that actually names a field, was dropped and the field's
+// missing-required case was never generated.
+func TestMergedRequiredKeepsValueTypes(t *testing.T) {
+	s := mustSchema(t, `{"type":"object","properties":{"1":{"type":"string"}},"allOf":[{"required":[1]},{"required":["1"]}]}`)
+	cases := GenerateCases(s)
+	if _, ok := caseNamed(cases, "missing:1"); !ok {
+		t.Errorf("required field \"1\" is not probed: %v", names(cases))
+	}
+}
+
+// Everything mcpvet prints in text mode is text the audited server chose. A
+// server that wants its own drift to go unread can put a carriage return or an
+// ANSI erase sequence in a schema and overwrite the lines that report it, so
+// server-supplied values must be escaped before they are embedded in a drift
+// detail.
+func TestDriftDetailNeutralizesServerControlCharacters(t *testing.T) {
+	// A property name: string *values* inside a schema are already rendered as
+	// JSON by the fingerprint, but names are written to it verbatim.
+	payload := "city\r\x1b[2K\nOK — tool surface matches the lockfile"
+	old := mustSchema(t, `{"type":"object","properties":{"city":{"type":"string"}}}`)
+	now := map[string]any{"type": "object", "properties": map[string]any{
+		payload: map[string]any{"type": "string"},
+	}}
+	info := ServerInfo{Name: "srv", Version: "1.0.0"}
+	drifts := Diff(
+		BuildLock(info, []ToolSurface{{Name: "lookup", Description: "d", InputSchema: old}}),
+		BuildLock(info, []ToolSurface{{Name: "lookup", Description: "d", InputSchema: now}}),
+	)
+	if len(drifts) == 0 {
+		t.Fatal("adding a pattern did not drift")
+	}
+	for _, d := range drifts {
+		// The only control characters mcpvet itself writes are the two newlines
+		// laying out a shape change; anything else came from the server.
+		if strings.ContainsFunc(d.Detail, func(r rune) bool { return r != '\n' && unicode.IsControl(r) }) {
+			t.Errorf("%s detail carries raw control characters from the server: %q", d.Kind, d.Detail)
+		}
+		if strings.Count(d.Detail, "\n") > 2 {
+			t.Errorf("%s detail: the server injected a line into the report: %q", d.Kind, d.Detail)
+		}
+	}
 }
