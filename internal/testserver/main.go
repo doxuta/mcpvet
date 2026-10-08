@@ -97,6 +97,23 @@ func main() {
 		})
 	}
 
+	// A tool whose schema pins a field with "const", registered through the
+	// typed AddTool so the SDK validates every call against that schema: it
+	// correctly rejects any input mcpvet generates that ignores the const.
+	if os.Getenv("MCPVET_CONST_TOOL") != "" {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "shape",
+			Description: "Describes a circle. Only kind=circle is accepted.",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"kind": map[string]any{"type": "string", "const": "circle"}},
+				"required":   []any{"kind"},
+			},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, a map[string]any) (*mcp.CallToolResult, any, error) {
+			return text("round"), nil, nil
+		})
+	}
+
 	// A tools/list that fails with a message of the operator's choosing. The
 	// message is server-controlled text that mcpvet does not print in its
 	// report but in its error path, so this is what lets a test drive text the

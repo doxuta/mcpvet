@@ -283,6 +283,11 @@ func validValue(s schema, depth int) (any, bool) {
 	if depth > maxSchemaDepth {
 		return nil, false
 	}
+	// const is a one-member enum (JSON Schema 2020-12 §6.1.3): the only value
+	// the schema accepts, so the placeholder below would be a false finding.
+	if c, ok := s.m["const"]; ok {
+		return c, true
+	}
 	if en := s.enum(); len(en) > 0 {
 		return en[0], true
 	}
