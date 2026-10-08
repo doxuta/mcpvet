@@ -31,11 +31,13 @@ $ mcpvet fuzz -timeout 3s -- ./my-mcp-server
 mcpvet: testserver v1.0.0 — 3 tools, 28 generated cases
 
 FINDINGS:
- ! lookup_city   accepted_invalid   server accepted input its own schema forbids
+ ! lookup_city              accepted_invalid   server accepted input its own schema forbids
      case: missing:city
- ! lookup_city   accepted_invalid   server accepted input its own schema forbids
+ ! lookup_city              accepted_invalid   server accepted input its own schema forbids
+     case: wrongtype:city
+ ! lookup_city              accepted_invalid   server accepted input its own schema forbids
      case: oversize:city
- ! slow          hang               no response within 3s — an agent would stall here
+ ! slow                     hang               no response within 3s — an agent would stall here
      case: valid
 exit 1
 ```
@@ -63,7 +65,7 @@ From each tool's own input schema, per field:
 
 | Category | Cases | Expected |
 | --- | --- | --- |
-| valid | mid-range values, format-aware (`date`, `email`, `uri`), first enum member | accepted |
+| valid | mid-range values, format-aware (`date`, `email`, `uri`), first enum member, the `const` value | accepted |
 | boundary | `minimum`/`maximum`, one past each, empty string vs `minLength` | edges accepted, past-edge rejected |
 | hostile | missing required, type confusion, oversized strings, out-of-enum | **rejected** |
 | payloads | SQL/path-traversal/JNDI/template/NUL/emoji/"ignore previous instructions" | treated as data, never a crash |
