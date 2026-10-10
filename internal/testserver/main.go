@@ -114,6 +114,23 @@ func main() {
 		})
 	}
 
+	// A tool whose schema requires a name it does not declare under
+	// "properties", registered through the typed AddTool so the SDK validates
+	// every call: it correctly rejects any input that omits the name.
+	if os.Getenv("MCPVET_UNDECLARED_REQUIRED_TOOL") != "" {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "tagged",
+			Description: "Needs a tag it never declares.",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"name": map[string]any{"type": "string"}},
+				"required":   []any{"name", "tag"},
+			},
+		}, func(ctx context.Context, req *mcp.CallToolRequest, a map[string]any) (*mcp.CallToolResult, any, error) {
+			return text("tagged"), nil, nil
+		})
+	}
+
 	// A tools/list that fails with a message of the operator's choosing. The
 	// message is server-controlled text that mcpvet does not print in its
 	// report but in its error path, so this is what lets a test drive text the

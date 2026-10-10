@@ -113,6 +113,28 @@ func casesFor(s schema) []Case {
 			accept = ExpectEither
 		}
 	}
+	// "required" is independent of "properties" (JSON Schema 2020-12 §6.5.3):
+	// a required name the schema never declares must still be present, or the
+	// carrier is missing a required field. Its value is bound only by
+	// additionalProperties: any placeholder under true (the default), a value
+	// of that schema when it is one, and nothing under false, where no
+	// instance satisfies the schema, so the accept-expectation relaxes.
+	for _, name := range required {
+		if _, declared := props[name]; declared {
+			continue
+		}
+		v, ok := any("mcpvet"), true
+		switch ap := s.m["additionalProperties"].(type) {
+		case bool:
+			ok = ap
+		case map[string]any:
+			v, ok = validValue(schema{ap}, 0)
+		}
+		base[name] = v
+		if !ok {
+			accept = ExpectEither
+		}
+	}
 	relax := func(e Expect) Expect {
 		if e == ExpectAccept {
 			return accept
