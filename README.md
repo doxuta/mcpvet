@@ -56,7 +56,9 @@ go install github.com/doxuta/mcpvet/cmd/mcpvet@latest
 ```
 
 `check` exits non-zero on **breaking** drift (tool removed, schema shape
-changed, new required field, description rewritten); cosmetic changes are
+changed, new required field, description rewritten, a tool that now must be
+called as an MCP task) and on a tool whose input schema is not `type: "object"`
+(`schema_not_object`: the agent sees no parameters). Cosmetic changes are
 reported but don't fail. `fuzz` additionally exits non-zero on findings.
 
 ## What it generates
@@ -73,6 +75,44 @@ From each tool's own input schema, per field:
 A server that *accepts* what its own schema forbids is a finding: the agent's
 model reads that schema and will eventually send exactly what it promises is
 invalid.
+
+## Proof
+
+Measured 2026-10-19 against the four reference servers in
+[modelcontextprotocol/servers](https://github.com/modelcontextprotocol/servers),
+run through `npx` exactly as in the examples above. `1.0.0` is npm's `latest`
+for all four (published 2026-10-11).
+
+| What | Server | Result |
+| --- | --- | --- |
+| drift, older release → `1.0.0` | `server-filesystem` 2025.8.21 | 29 drift lines, 28 breaking: 13 tools gained their whole schema, 2 descriptions rewritten (114 → 234, 332 → 424 chars) |
+| | `server-memory` 2025.11.25 | 2: `create_entities` description 51 → 296 chars; `search_nodes.query` gained `maxLength: 2048` |
+| | `server-everything` 2026.1.26 | 9: every tool dropped `additionalProperties: false`, so each schema now accepts more |
+| `schema_not_object` | `server-filesystem` 2025.8.21 | 13 of 14 tools advertised `{"$schema": "…"}` and nothing else. Before 2026-10-19 mcpvet locked this and `check` printed OK |
+| | all four at `1.0.0` | 0 |
+| `fuzz` | `server-sequential-thinking` | 1 tool, 46 cases, 0 findings |
+| | `server-everything` | 14 tools, 64 cases, 0 findings; `simulate-research-query` not fuzzed (requires MCP tasks). Before 2026-10-19 it was fuzzed with plain calls and reported as a false `rejected_valid`, failing the run |
+| | `server-filesystem` (root: an empty temp dir) | 14 tools, 179 cases, 10 `rejected_valid` — see Limitations |
+
+`server-memory` was locked and checked but not fuzzed: its tools write to the
+server's own memory file. Each of the two 2026-10-19 bugs has a regression
+test (`regress_2026_10_19_test.go`) that fails on the old code.
+
+## Limitations
+
+- **Semantic constraints are invisible to a schema.** The 10 `server-filesystem`
+  findings are all valid-shaped paths that do not exist under the allowed root
+  (`ENOENT`). The schema says "any string" and the server is right to refuse;
+  mcpvet cannot know that. Treat `rejected_valid` as a prompt to read, or
+  `-skip` the tool.
+- **No MCP tasks.** Tools that declare `execution.taskSupport: "required"` are
+  listed and locked but never called. The Go SDK has no field for it (v1.7.0,
+  v1.8.0), so mcpvet reads it off the raw `tools/list` response.
+- **Lockfiles written before 2026-10-19 record no task support.** A tool that
+  already required tasks shows one `task_support_changed` drift on the first
+  `check`; run `mcpvet lock` again.
+- **stdio only.** No Streamable HTTP transport yet.
+- Output schemas, resources and prompts are not locked.
 
 ## Design choices
 
