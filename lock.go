@@ -36,6 +36,7 @@ type ToolLock struct {
 	SchemaHash      string `json:"input_schema_sha256"`
 	SchemaShape     string `json:"input_schema_shape"`
 	Required        string `json:"required,omitempty"`
+	TaskSupport     string `json:"task_support,omitempty"` // "" is the spec default, forbidden
 }
 
 const lockVersion = 1
@@ -48,6 +49,7 @@ func BuildLock(server ServerInfo, tools []ToolSurface) Lock {
 			Name:            t.Name,
 			DescriptionHash: hash(t.Description),
 			DescriptionLen:  len(t.Description),
+			TaskSupport:     t.TaskSupport,
 		}
 		if s, ok := asSchema(t.InputSchema); ok {
 			tl.SchemaShape = s.fingerprint()
@@ -65,6 +67,7 @@ type ToolSurface struct {
 	Name        string
 	Description string
 	InputSchema any
+	TaskSupport string // execution.taskSupport; "" when absent or "forbidden"
 }
 
 // Drift is one difference between a stored lock and the live server.
@@ -103,11 +106,15 @@ func Diff(old, new Lock) []Drift {
 			detail := "input schema changed"
 			if o.SchemaShape != t.SchemaShape {
 				detail = fmt.Sprintf("input schema shape changed:\n    was: %s\n    now: %s",
-					SafeText(o.SchemaShape), SafeText(t.SchemaShape))
+					shapeText(o.SchemaShape), shapeText(t.SchemaShape))
 			} else {
 				detail = "input schema bytes changed but shape is equivalent (docs/annotations only)"
 			}
 			out = append(out, Drift{t.Name, "schema_changed", detail})
+		}
+		if o.TaskSupport != t.TaskSupport {
+			out = append(out, Drift{t.Name, "task_support_changed",
+				fmt.Sprintf("execution.taskSupport %q → %q", taskText(o.TaskSupport), taskText(t.TaskSupport))})
 		}
 		if o.Required != t.Required {
 			out = append(out, Drift{t.Name, "required_changed",
@@ -123,10 +130,11 @@ func Diff(old, new Lock) []Drift {
 }
 
 // Breaking reports whether a drift breaks callers (as opposed to a cosmetic
-// change): removals, schema shape changes, and new required fields.
+// change): removals, schema shape changes, new required fields, and a change
+// in whether the tool must be called as an MCP task.
 func (d Drift) Breaking() bool {
 	switch d.Kind {
-	case "removed", "required_changed":
+	case "removed", "required_changed", "task_support_changed":
 		return true
 	case "schema_changed":
 		return strings.Contains(d.Detail, "shape changed")
@@ -153,10 +161,10 @@ func ReadLock(path string) (Lock, error) {
 		return l, err
 	}
 	if err := json.Unmarshal(b, &l); err != nil {
-		return l, fmt.Errorf("mcpvet: parse %s: %w", path, err)
+		return l, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if l.Version != lockVersion {
-		return l, fmt.Errorf("mcpvet: lockfile version %d, this build understands %d", l.Version, lockVersion)
+		return l, fmt.Errorf("lockfile version %d, this build understands %d", l.Version, lockVersion)
 	}
 	return l, nil
 }
@@ -190,4 +198,22 @@ func SafeText(s string) string {
 func hash(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:8])
+}
+
+// shapeText renders a fingerprint for the drift report. A schema that asserts
+// nothing fingerprints to "", which would print as a blank line.
+func shapeText(shape string) string {
+	if shape == "" {
+		return "(no type: accepts any input)"
+	}
+	return SafeText(shape)
+}
+
+// taskText names an empty task support by the spec default it stands for.
+// It is printed with %q, which escapes whatever the server sent.
+func taskText(ts string) string {
+	if ts == "" {
+		return "forbidden"
+	}
+	return ts
 }

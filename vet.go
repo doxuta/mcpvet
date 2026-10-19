@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sync"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -20,7 +22,7 @@ import (
 type Finding struct {
 	Tool     string `json:"tool"`
 	Case     string `json:"case"`
-	Kind     string `json:"kind"` // crash, hang, accepted_invalid, protocol_error
+	Kind     string `json:"kind"` // crash, hang, accepted_invalid, rejected_valid, schema_not_object
 	Detail   string `json:"detail"`
 	Breaking bool   `json:"breaking"`
 }
@@ -32,7 +34,11 @@ type Report struct {
 	CaseCount int        `json:"case_count"`
 	Findings  []Finding  `json:"findings"`
 	Drifts    []Drift    `json:"drifts,omitempty"`
-	Lock      Lock       `json:"-"`
+	// TaskOnly are tools that declare execution.taskSupport "required" and
+	// so cannot be called without MCP tasks, which mcpvet does not speak.
+	// fuzz leaves them out rather than reporting their refusals.
+	TaskOnly []string `json:"task_only,omitempty"`
+	Lock     Lock     `json:"-"`
 }
 
 // Failed reports whether the run should fail CI.
@@ -70,9 +76,10 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "mcpvet", Version: "v0.1.0"}, nil)
 	cmd := exec.Command(opts.Command, opts.Args...)
-	session, err := client.Connect(ctx, &mcp.CommandTransport{Command: cmd}, nil)
+	tap := &taskTap{support: map[string]string{}}
+	session, err := client.Connect(ctx, tapTransport{&mcp.CommandTransport{Command: cmd}, tap}, nil)
 	if err != nil {
-		return nil, fmt.Errorf("mcpvet: connect: %w", err)
+		return nil, fmt.Errorf("connect: %w", err)
 	}
 	defer session.Close()
 
@@ -87,7 +94,7 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 	var tools []*mcp.Tool
 	for t, err := range session.Tools(ctx, nil) {
 		if err != nil {
-			return nil, fmt.Errorf("mcpvet: list tools: %w", err)
+			return nil, fmt.Errorf("list tools: %w", err)
 		}
 		tools = append(tools, t)
 	}
@@ -103,6 +110,7 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 			Name:        t.Name,
 			Description: t.Description,
 			InputSchema: decodeSchema(t.InputSchema),
+			TaskSupport: tap.get(t.Name),
 		})
 	}
 
@@ -111,12 +119,23 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 		ToolCount: len(surfaces),
 		Lock:      BuildLock(info, surfaces),
 	}
+	// A schema nothing can be generated from is checked without calling the
+	// tool, so lock and check report it too: the agent sees no parameters.
+	for _, s := range surfaces {
+		if gap := CoverageGap(GenerateCases(s.InputSchema)); gap != "" {
+			report.Findings = append(report.Findings, Finding{s.Name, "inputSchema", "schema_not_object", gap, true})
+		}
+	}
 	if !opts.Fuzz {
 		return report, nil
 	}
 
 	for _, s := range surfaces {
 		if skip[s.Name] {
+			continue
+		}
+		if s.TaskSupport == "required" {
+			report.TaskOnly = append(report.TaskOnly, s.Name)
 			continue
 		}
 		for _, c := range GenerateCases(s.InputSchema) {
@@ -209,4 +228,58 @@ func decodeSchema(v any) any {
 		return map[string]any{}
 	}
 	return out
+}
+
+// taskTap records each tool's execution.taskSupport from the raw tools/list
+// responses. The Go SDK's Tool type has no field for it (v1.7.0 and v1.8.0),
+// so it is gone by the time session.Tools returns. "forbidden" is the spec's
+// default and is recorded as nothing.
+type taskTap struct {
+	mcp.Connection
+	mu      sync.Mutex
+	support map[string]string
+}
+
+func (c *taskTap) Read(ctx context.Context) (jsonrpc.Message, error) {
+	msg, err := c.Connection.Read(ctx)
+	if r, ok := msg.(*jsonrpc.Response); ok && err == nil && r.Result != nil {
+		var res struct {
+			Tools []struct {
+				Name      string `json:"name"`
+				Execution struct {
+					TaskSupport string `json:"taskSupport"`
+				} `json:"execution"`
+			} `json:"tools"`
+		}
+		if json.Unmarshal(r.Result, &res) == nil {
+			c.mu.Lock()
+			for _, t := range res.Tools {
+				if ts := t.Execution.TaskSupport; ts != "" && ts != "forbidden" {
+					c.support[t.Name] = ts
+				}
+			}
+			c.mu.Unlock()
+		}
+	}
+	return msg, err
+}
+
+func (c *taskTap) get(name string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.support[name]
+}
+
+type tapTransport struct {
+	mcp.Transport
+	tap *taskTap
+}
+
+func (t tapTransport) Connect(ctx context.Context) (mcp.Connection, error) {
+	conn, err := t.Transport.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	t.tap.Connection = conn
+	return t.tap, nil
 }

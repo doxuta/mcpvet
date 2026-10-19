@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -131,6 +133,44 @@ func main() {
 		})
 	}
 
+	// A tool advertised with an input schema that declares no type at all —
+	// what @modelcontextprotocol/server-filesystem 2025.8.21 sent for 13 of
+	// its 14 tools: {"$schema": "..."} and nothing else. The SDK refuses to
+	// register such a schema, so the tool is registered as an object and the
+	// advertised schema is replaced on the way out of tools/list.
+	if os.Getenv("MCPVET_UNTYPED_SCHEMA_TOOL") != "" {
+		mcp.AddTool(s, &mcp.Tool{Name: "untyped", Description: "Reads a file."},
+			func(ctx context.Context, req *mcp.CallToolRequest, a lookupArgs) (*mcp.CallToolResult, any, error) {
+				return text("contents"), nil, nil
+			})
+		s.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+			return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+				res, err := next(ctx, method, req)
+				if lt, ok := res.(*mcp.ListToolsResult); ok && err == nil {
+					for _, t := range lt.Tools {
+						if t.Name == "untyped" {
+							t.InputSchema = map[string]any{"$schema": "http://json-schema.org/draft-07/schema#"}
+						}
+					}
+				}
+				return res, err
+			}
+		})
+	}
+
+	// A tool that declares execution.taskSupport "required" (MCP tasks, spec
+	// 2025-11-25) and, like @modelcontextprotocol/server-everything's
+	// simulate-research-query, answers every plain call with a tool error. The
+	// SDK's Tool type has no execution field, so taskOnlyConn adds it on the wire.
+	var transport mcp.Transport = &mcp.StdioTransport{}
+	if os.Getenv("MCPVET_TASK_REQUIRED_TOOL") != "" {
+		mcp.AddTool(s, &mcp.Tool{Name: "research", Description: "Long-running research."},
+			func(ctx context.Context, req *mcp.CallToolRequest, a lookupArgs) (*mcp.CallToolResult, any, error) {
+				return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "requires task augmentation"}}}, nil, nil
+			})
+		transport = taskOnlyTransport{transport}
+	}
+
 	// A tools/list that fails with a message of the operator's choosing. The
 	// message is server-controlled text that mcpvet does not print in its
 	// report but in its error path, so this is what lets a test drive text the
@@ -146,7 +186,36 @@ func main() {
 		})
 	}
 
-	if err := s.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+	if err := s.Run(context.Background(), transport); err != nil {
 		log.Fatal(err)
 	}
+}
+
+type taskOnlyTransport struct{ mcp.Transport }
+
+func (t taskOnlyTransport) Connect(ctx context.Context) (mcp.Connection, error) {
+	c, err := t.Transport.Connect(ctx)
+	return taskOnlyConn{c}, err
+}
+
+type taskOnlyConn struct{ mcp.Connection }
+
+// Write marks the "research" tool as task-only in every tools/list result.
+func (c taskOnlyConn) Write(ctx context.Context, msg jsonrpc.Message) error {
+	if r, ok := msg.(*jsonrpc.Response); ok && r.Result != nil {
+		var res map[string]any
+		if json.Unmarshal(r.Result, &res) == nil {
+			if tools, ok := res["tools"].([]any); ok {
+				for _, t := range tools {
+					if m, ok := t.(map[string]any); ok && m["name"] == "research" {
+						m["execution"] = map[string]any{"taskSupport": "required"}
+					}
+				}
+				if b, err := json.Marshal(res); err == nil {
+					r.Result = b
+				}
+			}
+		}
+	}
+	return c.Connection.Write(ctx, msg)
 }

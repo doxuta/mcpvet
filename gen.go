@@ -55,8 +55,8 @@ func probeCase() Case {
 // schema produced real coverage.
 func CoverageGap(cases []Case) string {
 	if len(cases) == 1 && cases[0].Name == probeCaseName {
-		return "no cases generated: the input schema does not resolve to an object " +
-			"(unresolved $ref, or a non-object root) — only an empty-args probe was sent"
+		return `input schema is not type "object" as MCP requires (no type, an unresolved ` +
+			`$ref, or a non-object root): the agent sees no parameters`
 	}
 	return ""
 }

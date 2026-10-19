@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/doxuta/mcpvet"
@@ -59,6 +60,9 @@ func main() {
 		die(mcpvet.WriteLock(*lockPath, report.Lock))
 		fmt.Printf("mcpvet: locked %d tools from %s %s → %s\n",
 			report.ToolCount, mcpvet.SafeText(report.Server.Name), mcpvet.SafeText(report.Server.Version), *lockPath)
+		for _, f := range report.Findings {
+			fmt.Fprintf(os.Stderr, "mcpvet: warning: %s: %s\n", mcpvet.SafeText(f.Tool), f.Detail)
+		}
 		return
 	}
 
@@ -106,6 +110,13 @@ func printReport(w io.Writer, r *mcpvet.Report, mode string) {
 		for _, f := range r.Findings {
 			fmt.Fprintf(w, " ! %-24s %-18s %s\n     case: %s\n", mcpvet.SafeText(f.Tool), f.Kind, f.Detail, mcpvet.SafeText(f.Case))
 		}
+	}
+	if len(r.TaskOnly) > 0 && mode == "fuzz" {
+		names := make([]string, len(r.TaskOnly))
+		for i, n := range r.TaskOnly {
+			names[i] = mcpvet.SafeText(n)
+		}
+		fmt.Fprintf(w, "\nnot fuzzed (execution.taskSupport is required; mcpvet does not speak MCP tasks): %s\n", strings.Join(names, ", "))
 	}
 	if !r.Failed() {
 		fmt.Fprintln(w, "\nOK — tool surface matches the lockfile"+fuzzSuffix(mode))
