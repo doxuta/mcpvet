@@ -1,0 +1,15 @@
+{
+  "name": "mcpvet",
+  "description": "mcpvet: a lockfile, drift gate and schema-driven fuzzer for MCP servers.",
+  "owner": {
+    "name": "Xuan Tai Doan",
+    "url": "https://github.com/doxuta"
+  },
+  "plugins": [
+    {
+      "name": "mcpvet",
+      "source": "./",
+      "description": "Vet an MCP server before your agent trusts it: lockfile, drift check and schema-driven fuzzing."
+    }
+  ]
+}

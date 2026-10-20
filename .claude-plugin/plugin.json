@@ -1,0 +1,10 @@
+{
+  "name": "mcpvet",
+  "version": "0.2.0",
+  "description": "Vet an MCP server before your agent trusts it: lock its tool surface, catch silent drift (rewritten descriptions, changed schemas), and fuzz every tool from its own JSON Schema.",
+  "author": { "name": "Xuan Tai Doan", "url": "https://github.com/doxuta" },
+  "homepage": "https://github.com/doxuta/mcpvet",
+  "repository": "https://github.com/doxuta/mcpvet",
+  "license": "MIT",
+  "keywords": ["mcp", "security", "drift", "fuzzing", "supply-chain"]
+}
