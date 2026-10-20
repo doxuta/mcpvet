@@ -115,6 +115,40 @@ for all four (published 2026-10-11).
 server's own memory file. Each of the two 2026-10-19 bugs has a regression
 test (`regress_2026_10_19_test.go`) that fails on the old code.
 
+### Plugin and skill (2026-10-20)
+
+Installed from GitHub into a fresh, empty `HOME` (`mktemp -d`), Claude Code
+2.1.292 and skills 1.7.4:
+
+```
+$ claude plugin marketplace add doxuta/mcpvet && claude plugin install mcpvet@mcpvet
+✔ Successfully added marketplace: mcpvet (declared in user settings)
+✔ Successfully installed plugin: mcpvet@mcpvet (scope: user)
+
+$ npx skills add doxuta/mcpvet -a claude-code -y
+◇  Found 1 skill
+◇  Installed 1 skill
+│  ✓ mcpvet (copied)
+│    → ./.claude/skills/mcpvet
+```
+
+Following the skill's own commands found two bugs, both with tests that fail
+on the old code:
+
+- The skill's first command, `mcpvet lock -lock .mcpvet/filesystem.lock.json`,
+  failed with "no such file or directory" in a project without `.mcpvet/`.
+  The lockfile's directory is now created.
+- This README's CI example put `-skip` after `--`, where it is passed to the
+  server. Against the test server it ran 28 cases instead of 25: the tool it
+  meant to spare was called. `fuzz` now refuses that line, and
+  `cmd/mcpvet/docs_test.go` parses every `mcpvet` command in the README and the
+  skill with the real flag set.
+
+The skill's three commands were then run as written against
+`server-filesystem@1.0.0`: lock 14 tools, check OK, fuzz 112 cases with the four
+writing tools skipped (the same `ENOENT` findings as above). CI runs
+`claude plugin validate --strict` on both manifests and the skill.
+
 ## Limitations
 
 - **Semantic constraints are invisible to a schema.** The 10 `server-filesystem`
@@ -128,6 +162,10 @@ test (`regress_2026_10_19_test.go`) that fails on the old code.
 - **Lockfiles written before 2026-10-19 record no task support.** A tool that
   already required tasks shows one `task_support_changed` drift on the first
   `check`; run `mcpvet lock` again.
+- **The plugin needs Go.** There are no release binaries; the skill installs
+  the CLI with `go install` and stops if Go is missing.
+- **v0.1.0 (2026-08-26) was `@latest` until 2026-10-20.** Fixes made on main
+  after it reached `go install …@latest` only with the v0.2.0 tag.
 - **stdio only.** No Streamable HTTP transport yet.
 - Output schemas, resources and prompts are not locked.
 
