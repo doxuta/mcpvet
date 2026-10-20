@@ -48,11 +48,28 @@ exit 1
 go install github.com/doxuta/mcpvet/cmd/mcpvet@latest
 ```
 
+### As a Claude Code plugin
+
+The plugin carries one skill that tells the agent when to run mcpvet (adding,
+enabling or upgrading an MCP server) and how to read the result. It still needs
+the CLI above; the skill installs it with `go install` if it is missing.
+
+```
+/plugin install mcpvet --marketplace doxuta/mcpvet
+```
+
+Or from a shell, or for other agents through [skills](https://github.com/vercel-labs/skills):
+
+```bash
+claude plugin marketplace add doxuta/mcpvet && claude plugin install mcpvet@mcpvet
+npx skills add doxuta/mcpvet
+```
+
 ## Use in CI
 
 ```yaml
 - run: mcpvet check -- npx -y @your/mcp-server   # gate on drift
-- run: mcpvet fuzz  -- ./your-server -skip delete_everything
+- run: mcpvet fuzz -skip delete_everything -- ./your-server   # flags go before --
 ```
 
 `check` exits non-zero on **breaking** drift (tool removed, schema shape

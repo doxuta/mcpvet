@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -144,10 +145,13 @@ func (d Drift) Breaking() bool {
 	return false
 }
 
-// WriteLock saves a lock as indented JSON.
+// WriteLock saves a lock as indented JSON, creating its directory if needed.
 func WriteLock(path string, l Lock) error {
 	b, err := json.MarshalIndent(l, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(path, append(b, '\n'), 0o644)

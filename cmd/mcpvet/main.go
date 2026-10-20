@@ -23,16 +23,15 @@ func main() {
 		usage()
 	}
 	mode := os.Args[1]
-	fs := flag.NewFlagSet(mode, flag.ExitOnError)
-	lockPath := fs.String("lock", "mcp.lock.json", "lockfile path")
-	timeout := fs.Duration("timeout", 10*time.Second, "per-call timeout")
-	jsonOut := fs.Bool("json", false, "machine-readable output")
-	skip := fs.String("skip", "", "comma-separated tool names never to call")
+	fs, lockPath, timeout, jsonOut, skip := newFlags(mode, flag.ExitOnError)
 	fs.Parse(os.Args[2:])
 
 	args := fs.Args()
 	if len(args) == 0 {
 		usage()
+	}
+	if err := misplacedFlags(fs, mode, args[1:]); err != nil {
+		die(err)
 	}
 
 	opts := mcpvet.Options{
@@ -82,6 +81,37 @@ func main() {
 	if report.Failed() {
 		os.Exit(1)
 	}
+}
+
+// newFlags is the one flag set every mode shares. The skill and README
+// examples are parsed with it in tests, so a documented flag that does not
+// exist fails CI instead of failing the agent that copies it.
+func newFlags(mode string, h flag.ErrorHandling) (fs *flag.FlagSet, lockPath *string, timeout *time.Duration, jsonOut *bool, skip *string) {
+	fs = flag.NewFlagSet(mode, h)
+	lockPath = fs.String("lock", "mcp.lock.json", "lockfile path")
+	timeout = fs.Duration("timeout", 10*time.Second, "per-call timeout")
+	jsonOut = fs.Bool("json", false, "machine-readable output")
+	skip = fs.String("skip", "", "comma-separated tool names never to call")
+	return
+}
+
+// misplacedFlags catches mcpvet flags written after "--", where they are
+// handed to the server instead. Until 2026-10-20 the README's own CI example
+// did this with -skip, so fuzz called the destructive tool it meant to spare.
+// For fuzz a misplaced -skip is an error; anything else is a warning, since a
+// server may have a flag of the same name.
+func misplacedFlags(fs *flag.FlagSet, mode string, serverArgs []string) error {
+	for _, a := range serverArgs {
+		name, _, _ := strings.Cut(strings.TrimLeft(a, "-"), "=")
+		if !strings.HasPrefix(a, "-") || fs.Lookup(name) == nil {
+			continue
+		}
+		if mode == "fuzz" && name == "skip" {
+			return fmt.Errorf("%s comes after -- and would be passed to the server, so fuzz would still call those tools; put it before --", a)
+		}
+		fmt.Fprintf(os.Stderr, "mcpvet: warning: %s comes after -- and is passed to the server, not to mcpvet\n", a)
+	}
+	return nil
 }
 
 // printReport writes the human-facing report. Every name here is a name the
