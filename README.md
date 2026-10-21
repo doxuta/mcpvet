@@ -149,6 +149,34 @@ The skill's three commands were then run as written against
 writing tools skipped (the same `ENOENT` findings as above). CI runs
 `claude plugin validate --strict` on both manifests and the skill.
 
+### Skill evals (2026-10-21)
+
+`evals/` is a `claude plugin eval` suite: four prompts, each run three times
+with the plugin and three times without it, graded by regular expressions only
+(no judge model). Claude Code 2.1.305, agent model sonnet, 24 runs, $0.62:
+
+| case | with | without | Δ |
+|---|---|---|---|
+| lock a server before trusting it (exact `lock` and `check` lines) | 1.00 | 0.00 | +1.00 |
+| fuzz in CI without calling `delete_all_notes` (`-skip` before `--`, warns about real data) | 0.89 | 0.33 | +0.56 |
+| `description_changed` in CI: read before re-locking, same lock path and command | 1.00 | 0.50 | +0.50 |
+| unrelated Go question (the skill must not fire) | 1.00 | 1.00 | 0.00 |
+
+Mean Δ +0.51. Without the plugin the model does not know the CLI, so the
+command graders fail; the should-not-fire case shows the skill does not
+trigger on an unrelated prompt.
+
+The suite was checked by breaking the skill on purpose: with its fuzz example
+rewritten to put `-skip` after `--`, the fuzz case fell from 0.89 to 0.67 and
+2 of 3 runs were caught passing the flag to the server. What still fails: in 1
+of 3 runs with the plugin the fuzz answer gave the right command but no warning
+about real data, and in 1 of 3 mutated runs the model fixed the flag order on
+its own, so the suite under-reports a broken example. Re-run it with:
+
+```
+claude plugin eval . --ablation with-without --no-publish
+```
+
 ## Limitations
 
 - **Semantic constraints are invisible to a schema.** The 10 `server-filesystem`
