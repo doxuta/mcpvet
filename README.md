@@ -115,6 +115,24 @@ for all four (published 2026-10-11).
 server's own memory file. Each of the two 2026-10-19 bugs has a regression
 test (`regress_2026_10_19_test.go`) that fails on the old code.
 
+### Annotations (2026-10-22)
+
+Claude Code 2.1.307 retries an HTTP tool call that was cut off mid-call, but
+only for tools annotated read-only or idempotent, so those hints now change
+what the client does. Until today the lockfile did not record them: a server
+that flipped `idempotentHint` passed `check` with OK. It is now an
+`annotations_changed` drift, and `regress_2026_10_22_test.go` fails on the old
+code (mutation-checked: dropping the compare, the spec defaults, or the
+old-lock guard each turns a test red).
+
+Against `server-filesystem`, a 2025.8.21 lock checked against npm `latest`
+(server 2.0.0, 2026-10-19) prints 14 `annotations_changed` lines, one per tool:
+10 tools now claim `readOnlyHint: true`, `write_file` and `create_directory`
+claim `idempotentHint: true`, and all 14 claim `openWorldHint: false`. What it
+does not show: that pair already failed on schema drift, so the exit code is
+the same as before; the new lines say which trust claims changed. 1.0.0 and
+2.0.0 have identical surfaces, annotations included.
+
 ### Plugin and skill (2026-10-20)
 
 Installed from GitHub into a fresh, empty `HOME` (`mktemp -d`), Claude Code
