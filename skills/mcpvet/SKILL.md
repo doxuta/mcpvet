@@ -44,6 +44,7 @@ Exit 1 means breaking drift. Lines marked `!` are breaking:
 | `description_changed` | A description steers the model. Show the user the new text and ask before re-locking. |
 | `removed`, `required_changed`, `schema_changed` (shape) | Callers break. Report which tools. |
 | `task_support_changed` | The tool now must be called as an MCP task. |
+| `annotations_changed` | A hint the client acts on flipped (a tool now claims to be read-only or idempotent, so it may be auto-approved or retried). Show the user which hint and on which tool, and ask before re-locking. |
 
 Re-lock only after the user has read the drift and agreed:
 `mcpvet lock -lock <same path> -- <same command>`.

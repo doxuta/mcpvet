@@ -38,6 +38,11 @@ type ToolLock struct {
 	SchemaShape     string `json:"input_schema_shape"`
 	Required        string `json:"required,omitempty"`
 	TaskSupport     string `json:"task_support,omitempty"` // "" is the spec default, forbidden
+	// Annotations are the tool's behaviour hints with the spec defaults
+	// applied. Clients act on them (Claude Code 2.1.307 retries only
+	// read-only or idempotent tools), so a flip changes what the agent does.
+	// "" means the lock predates this field and is not compared.
+	Annotations string `json:"annotations,omitempty"`
 }
 
 const lockVersion = 1
@@ -51,6 +56,7 @@ func BuildLock(server ServerInfo, tools []ToolSurface) Lock {
 			DescriptionHash: hash(t.Description),
 			DescriptionLen:  len(t.Description),
 			TaskSupport:     t.TaskSupport,
+			Annotations:     t.Annotations.String(),
 		}
 		if s, ok := asSchema(t.InputSchema); ok {
 			tl.SchemaShape = s.fingerprint()
@@ -69,6 +75,30 @@ type ToolSurface struct {
 	Description string
 	InputSchema any
 	TaskSupport string // execution.taskSupport; "" when absent or "forbidden"
+	Annotations *Hints // nil when the server sent none
+}
+
+// Hints are the four behaviour hints of an MCP tool's annotations; nil means
+// the server did not send that hint.
+type Hints struct {
+	ReadOnly, Destructive, Idempotent, OpenWorld *bool
+}
+
+// String renders the hints with the spec defaults applied (readOnlyHint
+// false, destructiveHint true, idempotentHint false, openWorldHint true), so
+// spelling out a default is not a change.
+func (h *Hints) String() string {
+	if h == nil {
+		h = &Hints{}
+	}
+	v := func(b *bool, def bool) bool {
+		if b == nil {
+			return def
+		}
+		return *b
+	}
+	return fmt.Sprintf("readOnlyHint=%t destructiveHint=%t idempotentHint=%t openWorldHint=%t",
+		v(h.ReadOnly, false), v(h.Destructive, true), v(h.Idempotent, false), v(h.OpenWorld, true))
 }
 
 // Drift is one difference between a stored lock and the live server.
@@ -117,6 +147,9 @@ func Diff(old, new Lock) []Drift {
 			out = append(out, Drift{t.Name, "task_support_changed",
 				fmt.Sprintf("execution.taskSupport %q → %q", taskText(o.TaskSupport), taskText(t.TaskSupport))})
 		}
+		if o.Annotations != "" && o.Annotations != t.Annotations {
+			out = append(out, Drift{t.Name, "annotations_changed", "tool annotations changed: " + hintChanges(o.Annotations, t.Annotations)})
+		}
 		if o.Required != t.Required {
 			out = append(out, Drift{t.Name, "required_changed",
 				fmt.Sprintf("required fields %q → %q", o.Required, t.Required)})
@@ -132,10 +165,11 @@ func Diff(old, new Lock) []Drift {
 
 // Breaking reports whether a drift breaks callers (as opposed to a cosmetic
 // change): removals, schema shape changes, new required fields, and a change
-// in whether the tool must be called as an MCP task.
+// in whether the tool must be called as an MCP task, and any annotation flip
+// (clients decide retries and approval prompts from the hints).
 func (d Drift) Breaking() bool {
 	switch d.Kind {
-	case "removed", "required_changed", "task_support_changed":
+	case "removed", "required_changed", "task_support_changed", "annotations_changed":
 		return true
 	case "schema_changed":
 		return strings.Contains(d.Detail, "shape changed")
@@ -220,4 +254,23 @@ func taskText(ts string) string {
 		return "forbidden"
 	}
 	return ts
+}
+
+// hintChanges lists the hints that differ between two Hints.String values,
+// e.g. "idempotentHint false → true". Both sides are composed by mcpvet, but a
+// hand-edited lockfile is not, so the old side is escaped.
+func hintChanges(old, new string) string {
+	was := map[string]string{}
+	for _, kv := range strings.Fields(old) {
+		k, v, _ := strings.Cut(kv, "=")
+		was[k] = v
+	}
+	var out []string
+	for _, kv := range strings.Fields(new) {
+		k, v, _ := strings.Cut(kv, "=")
+		if was[k] != v {
+			out = append(out, fmt.Sprintf("%s %s → %s", k, SafeText(was[k]), v))
+		}
+	}
+	return strings.Join(out, ", ")
 }

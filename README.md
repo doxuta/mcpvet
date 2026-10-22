@@ -74,7 +74,7 @@ npx skills add doxuta/mcpvet
 
 `check` exits non-zero on **breaking** drift (tool removed, schema shape
 changed, new required field, description rewritten, a tool that now must be
-called as an MCP task) and on a tool whose input schema is not `type: "object"`
+called as an MCP task, a flipped behaviour hint such as `idempotentHint`) and on a tool whose input schema is not `type: "object"`
 (`schema_not_object`: the agent sees no parameters). Cosmetic changes are
 reported but don't fail. `fuzz` additionally exits non-zero on findings.
 
@@ -187,6 +187,10 @@ claude plugin eval . --ablation with-without --no-publish
 - **No MCP tasks.** Tools that declare `execution.taskSupport: "required"` are
   listed and locked but never called. The Go SDK has no field for it (v1.7.0,
   v1.8.0), so mcpvet reads it off the raw `tools/list` response.
+- **Lockfiles written before 2026-10-22 record no annotations**, and `check`
+  does not compare what it never recorded: run `mcpvet lock` again to start
+  gating on `readOnlyHint`, `destructiveHint`, `idempotentHint` and
+  `openWorldHint`.
 - **Lockfiles written before 2026-10-19 record no task support.** A tool that
   already required tasks shows one `task_support_changed` drift on the first
   `check`; run `mcpvet lock` again.
@@ -207,6 +211,12 @@ claude plugin eval . --ablation with-without --no-publish
   reports "docs-only change".
 - **Descriptions are locked too.** A description rewrite is treated as
   breaking: descriptions are the part of the surface that steers the model.
+- **Annotations are locked with the spec defaults applied.** Clients act on
+  the hints: Claude Code 2.1.307 retries an HTTP tool call cut off mid-call
+  only when the tool is read-only or idempotent, so a server that starts
+  calling a destructive tool idempotent can have it run twice when an HTTP
+  connection drops mid-call. Any flip is
+  breaking; spelling out a default is not a change.
 - **Read-only by default.** `lock` and `check` never call a tool. Fuzzing is
   opt-in and `-skip` excludes destructive tools.
 

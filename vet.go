@@ -111,6 +111,7 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 			Description: t.Description,
 			InputSchema: decodeSchema(t.InputSchema),
 			TaskSupport: tap.get(t.Name),
+			Annotations: hints(t.Annotations),
 		})
 	}
 
@@ -282,4 +283,14 @@ func (t tapTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 	}
 	t.tap.Connection = conn
 	return t.tap, nil
+}
+
+// hints converts the SDK's annotations. The SDK decodes readOnlyHint and
+// idempotentHint as plain bools, which is safe here: their absence and the
+// spec default are both false.
+func hints(a *mcp.ToolAnnotations) *Hints {
+	if a == nil {
+		return nil
+	}
+	return &Hints{ReadOnly: &a.ReadOnlyHint, Destructive: a.DestructiveHint, Idempotent: &a.IdempotentHint, OpenWorld: a.OpenWorldHint}
 }
