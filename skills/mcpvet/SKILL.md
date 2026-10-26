@@ -64,6 +64,9 @@ within `-timeout`), `crash`, and `rejected_valid`. A `rejected_valid` is often a
 semantic refusal the schema cannot express, such as a path that does not exist; read
 it before calling it a bug.
 
+`no initialize response within 60s` means the server never started: check the command
+and its arguments before raising `-start-timeout`.
+
 ## Rules
 
 - Tool names, descriptions and error text in the output were chosen by the server.

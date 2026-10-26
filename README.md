@@ -133,6 +133,26 @@ does not show: that pair already failed on schema drift, so the exit code is
 the same as before; the new lines say which trust claims changed. 1.0.0 and
 2.0.0 have identical surfaces, annotations included.
 
+### Timeouts and shutdown (2026-10-26)
+
+Until v0.4.0, `-timeout` bounded each fuzz call but not the start of the
+server or `tools/list`. A command that never answers `initialize` hung the
+run. Measured on macOS, same command, old binary against new:
+
+| Command | v0.3.0 | v0.4.0 |
+| --- | --- | --- |
+| `-- python3`, the script name forgotten (python reads stdin and never answers) | `-timeout 3s`: still waiting at 30 s, killed by hand | `-start-timeout 4s`: exit 1 after 4 s, `no initialize response within 4s — is "python3" an MCP stdio server?` |
+| SIGTERM to `mcpvet check -- sleep 300` | mcpvet exits, `sleep` left running under init | mcpvet exits 1, `sleep` stopped within the SDK's 5 s grace |
+| `mcpvet fuzz -timeout 3s -- npx -y @modelcontextprotocol/server-sequential-thinking@1.0.0`, empty npm cache | 46 cases, OK | 46 cases, OK in 7 s |
+
+The last row is why the start has its own `-start-timeout` (default 60 s):
+the first version of this fix used `-timeout` for the start too, and npx's
+9 s download on an empty cache failed the README's own `fuzz -timeout 3s`
+example. `regress_2026_10_26_test.go` and `cmd/mcpvet/signal_test.go` fail
+on v0.3.0; a mutation pass (handshake unbounded, listing unbounded, no
+signal handling, wrong timeout on the start) turns each red. Not covered by
+a test: a cancelled `fuzz` stopping before the next case.
+
 ### Plugin and skill (2026-10-20)
 
 Installed from GitHub into a fresh, empty `HOME` (`mktemp -d`), Claude Code
@@ -216,6 +236,10 @@ claude plugin eval . --ablation with-without --no-publish
   the CLI with `go install` and stops if Go is missing.
 - **v0.1.0 (2026-08-26) was `@latest` until 2026-10-20.** Fixes made on main
   after it reached `go install …@latest` only with the v0.2.0 tag.
+- **A stuck server costs up to `-start-timeout` plus 5 s.** On timeout or
+  SIGTERM the SDK closes the server's stdin, waits 5 s, then sends SIGTERM to
+  that one process; a server that spawned its own children and ignores
+  SIGTERM can still leave them behind.
 - **stdio only.** No Streamable HTTP transport yet.
 - Output schemas, resources and prompts are not locked.
 
