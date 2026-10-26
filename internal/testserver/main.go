@@ -36,6 +36,10 @@ func text(s string) *mcp.CallToolResult {
 }
 
 func main() {
+	// MCPVET_SLOW_START delays startup, like `npx -y` downloading a server.
+	if d, err := time.ParseDuration(os.Getenv("MCPVET_SLOW_START")); err == nil {
+		time.Sleep(d)
+	}
 	// A deliberately tiny page size when padding tools, so tests exercise a
 	// genuinely multi-page tools/list (the SDK default of 1000 would hide any
 	// pagination bug behind a single page).
@@ -185,6 +189,19 @@ func main() {
 			return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
 				if method == "tools/list" {
 					return nil, errors.New(msg)
+				}
+				return next(ctx, method, req)
+			}
+		})
+	}
+
+	// MCPVET_HANG_LIST answers initialize and then never answers tools/list.
+	if os.Getenv("MCPVET_HANG_LIST") != "" {
+		s.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+			return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+				if method == "tools/list" {
+					<-ctx.Done()
+					return nil, ctx.Err()
 				}
 				return next(ctx, method, req)
 			}

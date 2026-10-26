@@ -59,9 +59,14 @@ type Options struct {
 	// Command and Args launch a stdio MCP server (e.g. "npx", "-y", "some-mcp").
 	Command string
 	Args    []string
-	// Timeout bounds each individual tool call; a call that exceeds it is a
-	// "hang" finding.
+	// Timeout bounds the whole tools/list walk and each individual tool call;
+	// a tool call that exceeds it is a "hang" finding, a listing that exceeds
+	// it is an error.
 	Timeout time.Duration
+	// StartTimeout bounds launching the server and its initialize answer.
+	// It is separate from Timeout because `npx -y` may download the server
+	// first: 9 s for server-sequential-thinking on an empty npm cache.
+	StartTimeout time.Duration
 	// Fuzz enables generated-input testing. Without it, mcpvet only snapshots
 	// and diffs the tool surface (safe against servers with side effects).
 	Fuzz bool
@@ -74,11 +79,22 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 	if opts.Timeout <= 0 {
 		opts.Timeout = 10 * time.Second
 	}
+	if opts.StartTimeout <= 0 {
+		opts.StartTimeout = 60 * time.Second
+	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "mcpvet", Version: "v0.1.0"}, nil)
 	cmd := exec.Command(opts.Command, opts.Args...)
 	tap := &taskTap{support: map[string]string{}}
-	session, err := client.Connect(ctx, tapTransport{&mcp.CommandTransport{Command: cmd}, tap}, nil)
+	// The handshake and the listing are bounded too: a command that never
+	// answers initialize (a server waiting on a prompt, or not an MCP server
+	// at all) otherwise hangs a CI job until the runner kills it.
+	connCtx, cancel := context.WithTimeout(ctx, opts.StartTimeout)
+	session, err := client.Connect(connCtx, tapTransport{&mcp.CommandTransport{Command: cmd}, tap}, nil)
+	cancel()
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return nil, fmt.Errorf("connect: no initialize response within %s — is %q an MCP stdio server?", opts.StartTimeout, opts.Command)
+		}
 		return nil, fmt.Errorf("connect: %w", err)
 	}
 	defer session.Close()
@@ -91,9 +107,14 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 	// Paginate: a single ListTools call returns only the first page, which
 	// would let a server hide tools from the lock, the drift gate and the
 	// fuzzer. The SDK's iterator follows nextCursor to exhaustion.
+	listCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
 	var tools []*mcp.Tool
-	for t, err := range session.Tools(ctx, nil) {
+	for t, err := range session.Tools(listCtx, nil) {
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				return nil, fmt.Errorf("list tools: no response within %s", opts.Timeout)
+			}
 			return nil, fmt.Errorf("list tools: %w", err)
 		}
 		tools = append(tools, t)
@@ -140,6 +161,11 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 			continue
 		}
 		for _, c := range GenerateCases(s.InputSchema) {
+			// A cancelled run (SIGINT/SIGTERM in the CLI) stops here rather
+			// than reporting every remaining case as a hang.
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			report.CaseCount++
 			if f := runCase(ctx, session, s.Name, c, opts.Timeout); f != nil {
 				report.Findings = append(report.Findings, *f)

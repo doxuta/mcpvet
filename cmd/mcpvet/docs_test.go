@@ -28,7 +28,7 @@ func TestDocumentedCommandsParse(t *testing.T) {
 				t.Errorf("%s: %q: unknown mode %q", path, c, mode)
 				continue
 			}
-			fs, _, _, _, _ := newFlags(mode, flag.ContinueOnError)
+			fs, _, _, _, _, _ := newFlags(mode, flag.ContinueOnError)
 			fs.SetOutput(io.Discard)
 			if err := fs.Parse(fields[2:]); err != nil {
 				t.Errorf("%s: %q: %v", path, c, err)
@@ -98,7 +98,7 @@ func TestMisplacedSkipStopsFuzz(t *testing.T) {
 		{"fuzz", []string{"/srv", "--root", "/"}, false}, // the server's own flags
 	}
 	for _, c := range cases {
-		fs, _, _, _, _ := newFlags(c.mode, flag.ContinueOnError)
+		fs, _, _, _, _, _ := newFlags(c.mode, flag.ContinueOnError)
 		err := misplacedFlags(fs, c.mode, c.args)
 		if (err != nil) != c.wantErr {
 			t.Errorf("%s -- server %v: err = %v, want error %v", c.mode, c.args, err, c.wantErr)

@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/doxuta/mcpvet"
@@ -23,7 +25,7 @@ func main() {
 		usage()
 	}
 	mode := os.Args[1]
-	fs, lockPath, timeout, jsonOut, skip := newFlags(mode, flag.ExitOnError)
+	fs, lockPath, timeout, startTimeout, jsonOut, skip := newFlags(mode, flag.ExitOnError)
 	fs.Parse(os.Args[2:])
 
 	args := fs.Args()
@@ -35,10 +37,11 @@ func main() {
 	}
 
 	opts := mcpvet.Options{
-		Command: args[0],
-		Args:    args[1:],
-		Timeout: *timeout,
-		Fuzz:    mode == "fuzz",
+		Command:      args[0],
+		Args:         args[1:],
+		Timeout:      *timeout,
+		StartTimeout: *startTimeout,
+		Fuzz:         mode == "fuzz",
 	}
 	if *skip != "" {
 		opts.SkipTools = splitComma(*skip)
@@ -50,7 +53,11 @@ func main() {
 		usage()
 	}
 
-	report, err := mcpvet.Vet(context.Background(), opts)
+	// SIGINT/SIGTERM cancel the run instead of killing mcpvet outright, so Vet
+	// returns through session.Close and the server it started is stopped too.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	report, err := mcpvet.Vet(ctx, opts)
+	stop()
 	if err != nil {
 		die(err)
 	}
@@ -86,10 +93,11 @@ func main() {
 // newFlags is the one flag set every mode shares. The skill and README
 // examples are parsed with it in tests, so a documented flag that does not
 // exist fails CI instead of failing the agent that copies it.
-func newFlags(mode string, h flag.ErrorHandling) (fs *flag.FlagSet, lockPath *string, timeout *time.Duration, jsonOut *bool, skip *string) {
+func newFlags(mode string, h flag.ErrorHandling) (fs *flag.FlagSet, lockPath *string, timeout, startTimeout *time.Duration, jsonOut *bool, skip *string) {
 	fs = flag.NewFlagSet(mode, h)
 	lockPath = fs.String("lock", "mcp.lock.json", "lockfile path")
 	timeout = fs.Duration("timeout", 10*time.Second, "per-call timeout")
+	startTimeout = fs.Duration("start-timeout", 60*time.Second, "time for the server to start and answer initialize")
 	jsonOut = fs.Bool("json", false, "machine-readable output")
 	skip = fs.String("skip", "", "comma-separated tool names never to call")
 	return
@@ -186,7 +194,7 @@ func usage() {
   check   compare the live server against the lockfile (CI gate)
   fuzz    check + schema-driven valid/boundary/hostile input testing
 
-flags: -lock PATH  -timeout DUR  -skip tool1,tool2  -json`)
+flags: -lock PATH  -timeout DUR  -start-timeout DUR  -skip tool1,tool2  -json`)
 	os.Exit(2)
 }
 
