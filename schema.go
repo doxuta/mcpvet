@@ -165,6 +165,57 @@ var unorderedSchemaKeys = map[string]bool{"oneOf": true, "anyOf": true, "allOf":
 // maxSchemaDepth bounds recursion over an untrusted schema.
 const maxSchemaDepth = 64
 
+// dataKeys hold JSON values, not subschemas: a "$ref" inside them is data.
+var dataKeys = map[string]bool{"const": true, "enum": true, "default": true, "examples": true}
+
+// unresolvedRefs lists, sorted and deduplicated, the local JSON-pointer $refs
+// ("#/...") in a schema document that point at nothing. Anchors ("#name"),
+// remote refs and anything under a nested $id are not checked: their base is
+// not this document, so a miss here would not prove them broken.
+func unresolvedRefs(doc any) []string {
+	root, ok := doc.(map[string]any)
+	if !ok {
+		return nil
+	}
+	seen := map[string]any{}
+	var walk func(node any, depth int)
+	walk = func(node any, depth int) {
+		if depth > maxSchemaDepth {
+			return
+		}
+		switch n := node.(type) {
+		case []any:
+			for _, v := range n {
+				walk(v, depth+1)
+			}
+		case map[string]any:
+			if _, ok := n["$id"]; ok && depth > 0 {
+				return
+			}
+			if ref, ok := n["$ref"].(string); ok && strings.HasPrefix(ref, "#/") {
+				if _, ok := resolvePointer(root, ref); !ok {
+					seen[ref] = true
+				}
+			}
+			for k, v := range n {
+				switch {
+				case dataKeys[k]:
+				case namedSchemaKeys[k]:
+					if named, ok := v.(map[string]any); ok {
+						for _, sub := range named {
+							walk(sub, depth+1)
+						}
+					}
+				default:
+					walk(v, depth+1)
+				}
+			}
+		}
+	}
+	walk(root, 0)
+	return sortedKeys(seen)
+}
+
 // Fingerprint is a stable, human-diffable summary of a schema: sorted keys,
 // types, bounds, required flags, and every other non-annotation keyword the
 // schema carries, including ones mcpvet does not otherwise understand.

@@ -167,6 +167,41 @@ func main() {
 		})
 	}
 
+	// A tool whose outputSchema points at a $defs entry it never defines — what
+	// Google's Stitch MCP server sent for upload_design_md. Claude Code refuses
+	// the whole tools/list over it ("can't resolve reference"), so every tool
+	// on the server disappears, not just this one. MCPVET_DANGLING_REF=input
+	// puts the same dangling $ref on a property of the input schema instead.
+	if where := os.Getenv("MCPVET_DANGLING_REF"); where != "" {
+		mcp.AddTool(s, &mcp.Tool{Name: "upload", Description: "Uploads a design."},
+			func(ctx context.Context, req *mcp.CallToolRequest, a lookupArgs) (*mcp.CallToolResult, any, error) {
+				return text("uploaded"), nil, nil
+			})
+		dangling := map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"screen": map[string]any{"$ref": "#/$defs/ScreenInstance"}},
+			"$defs":      map[string]any{"Screen": map[string]any{"type": "object"}},
+		}
+		s.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+			return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+				res, err := next(ctx, method, req)
+				if lt, ok := res.(*mcp.ListToolsResult); ok && err == nil {
+					for _, t := range lt.Tools {
+						if t.Name != "upload" {
+							continue
+						}
+						if where == "input" {
+							t.InputSchema = dangling
+						} else {
+							t.OutputSchema = dangling
+						}
+					}
+				}
+				return res, err
+			}
+		})
+	}
+
 	// A tool that declares execution.taskSupport "required" (MCP tasks, spec
 	// 2025-11-25) and, like @modelcontextprotocol/server-everything's
 	// simulate-research-query, answers every plain call with a tool error. The

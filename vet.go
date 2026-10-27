@@ -22,7 +22,7 @@ import (
 type Finding struct {
 	Tool     string `json:"tool"`
 	Case     string `json:"case"`
-	Kind     string `json:"kind"` // crash, hang, accepted_invalid, rejected_valid, schema_not_object
+	Kind     string `json:"kind"` // crash, hang, accepted_invalid, rejected_valid, schema_not_object, unresolved_ref
 	Detail   string `json:"detail"`
 	Breaking bool   `json:"breaking"`
 }
@@ -146,6 +146,25 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 	for _, s := range surfaces {
 		if gap := CoverageGap(GenerateCases(s.InputSchema)); gap != "" {
 			report.Findings = append(report.Findings, Finding{s.Name, "inputSchema", "schema_not_object", gap, true})
+		}
+	}
+	// A $ref that points at nothing makes the schema invalid. In outputSchema
+	// it costs the whole tool: Claude Code 2.1.305 lists it, then fails every
+	// call in the client ("can't resolve reference") although the server
+	// answered. The output schema is checked, not locked.
+	for _, t := range tools {
+		for _, side := range []struct {
+			name   string
+			schema any
+			effect string
+		}{
+			{"inputSchema", t.InputSchema, "validators reject the schema and the agent gets no shape for that value"},
+			{"outputSchema", t.OutputSchema, "clients that validate results fail every call"},
+		} {
+			for _, ref := range unresolvedRefs(decodeSchema(side.schema)) {
+				report.Findings = append(report.Findings, Finding{t.Name, side.name, "unresolved_ref",
+					fmt.Sprintf("$ref %s points at nothing in the %s: %s", SafeText(ref), side.name, side.effect), true})
+			}
 		}
 	}
 	if !opts.Fuzz {
