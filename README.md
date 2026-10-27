@@ -74,8 +74,9 @@ npx skills add doxuta/mcpvet
 
 `check` exits non-zero on **breaking** drift (tool removed, schema shape
 changed, new required field, description rewritten, a tool that now must be
-called as an MCP task, a flipped behaviour hint such as `idempotentHint`) and on a tool whose input schema is not `type: "object"`
-(`schema_not_object`: the agent sees no parameters). Cosmetic changes are
+called as an MCP task, a flipped behaviour hint such as `idempotentHint`), on a tool whose input schema is not `type: "object"`
+(`schema_not_object`: the agent sees no parameters), and on a `$ref` in an
+input or output schema that points at nothing (`unresolved_ref`). Cosmetic changes are
 reported but don't fail. `fuzz` additionally exits non-zero on findings.
 
 ## What it generates
@@ -152,6 +153,30 @@ example. `regress_2026_10_26_test.go` and `cmd/mcpvet/signal_test.go` fail
 on v0.3.0; a mutation pass (handshake unbounded, listing unbounded, no
 signal handling, wrong timeout on the start) turns each red. Not covered by
 a test: a cancelled `fuzz` stopping before the next case.
+
+### Dangling `$ref` (2026-10-27)
+
+In June our own setup could not use Google's Stitch MCP server: one tool's
+`outputSchema` referenced `#/$defs/ScreenInstance` without defining it, and
+the Claude Code of that time rejected the whole `tools/list` (we ran it
+behind a proxy that patched the schema). mcpvet never read `outputSchema`,
+so it would have printed OK. Reproduced today with a test-server tool built
+the same way, against Claude Code 2.1.305 (`claude -p`, stream-json `init`
+event and one real call):
+
+| `$ref #/$defs/ScreenInstance` undefined, in | Claude Code 2.1.305 | mcpvet v0.4.0 | mcpvet v0.5.0 |
+| --- | --- | --- | --- |
+| `outputSchema` | tool listed; every call fails in the client: `Tool 'upload' has an invalid outputSchema: can't resolve reference #/$defs/ScreenInstance from id #`, although the server answered | `check` OK | `unresolved_ref`, exit 1 |
+| a property of `inputSchema` | tool listed, the call goes through | `check` OK | `unresolved_ref`, exit 1 |
+
+So the failure is narrower than in June (one tool, not the server), and it
+is silent until the agent calls the tool. No false positives on 7 public
+servers, 53 tools, 2 `$ref`s that do resolve (`mcp-server-time`): the four
+reference servers at `1.0.0` and `mcp-server-time`, `mcp-server-git`,
+`mcp-server-fetch` through `uvx`, all 0 findings. `regress_2026_10_27_test.go`
+fails on v0.4.0; a mutation pass (output schema not checked, `const`/`default`
+read as schema, nested `$id` not skipped, anchors and remote refs checked,
+property names read as keywords) turns each red.
 
 ### Plugin and skill (2026-10-20)
 
@@ -241,7 +266,11 @@ claude plugin eval . --ablation with-without --no-publish
   that one process; a server that spawned its own children and ignores
   SIGTERM can still leave them behind.
 - **stdio only.** No Streamable HTTP transport yet.
-- Output schemas, resources and prompts are not locked.
+- Output schemas, resources and prompts are not locked. Output schemas are
+  checked for `unresolved_ref` only.
+- **`unresolved_ref` checks local JSON pointers (`#/...`) only.** Anchors
+  (`#name`), remote refs and anything under a nested `$id` are skipped: their
+  base is not the tool's own schema, so a miss would prove nothing.
 
 ## Design choices
 
