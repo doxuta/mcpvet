@@ -1,10 +1,13 @@
 package mcpvet
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
 	"strings"
+
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // Expect is what mcpvet demands the server do with a generated case.
@@ -69,17 +72,19 @@ func CoverageGap(cases []Case) string {
 //
 // Local $refs are inlined and allOf is merged first; oneOf/anyOf roots produce
 // one case set per branch. A value mcpvet cannot prove the schema accepts is
-// never asserted as valid — it degrades to ExpectEither.
+// never asserted as valid — it degrades to ExpectEither, and so does any
+// expectation an independent validator disagrees with (newValidator).
 func GenerateCases(input any) []Case {
 	root, ok := asSchema(input)
 	if !ok {
 		return []Case{probeCase()}
 	}
 	resolved := schema{inlineRefs(root.m)}
+	check := newValidator(resolved.m)
 	if branches := resolved.branches(); len(branches) > 0 {
 		var out []Case
 		for i, b := range branches {
-			for _, c := range casesFor(b) {
+			for _, c := range casesFor(b, check) {
 				if c.Name == probeCaseName {
 					continue
 				}
@@ -88,13 +93,89 @@ func GenerateCases(input any) []Case {
 			}
 		}
 		if len(out) > 0 {
-			return out
+			return gradeCases(out, check)
 		}
 	}
-	return casesFor(mergeAllOf(resolved, 0))
+	return gradeCases(casesFor(mergeAllOf(resolved, 0), check), check)
 }
 
-func casesFor(s schema) []Case {
+// newValidator compiles a second opinion on what the schema accepts, or returns
+// nil when there can be none, and the generator's own reading then stands.
+//
+// The schema is untrusted, and jsonschema-go v0.4.3 follows a $ref with no
+// guard: a reference cycle overflows the stack, which no recover can catch, and
+// a chain of branching refs runs for 2^n steps. So it only ever sees a tree that
+// inlineRefs left free of references, whose size refBudget bounds. A recursive
+// schema, even a legitimate one, therefore gets no second opinion.
+func newValidator(inlined map[string]any) func(map[string]any) bool {
+	if hasRef(inlined) {
+		return nil
+	}
+	raw, err := json.Marshal(inlined)
+	if err != nil {
+		return nil
+	}
+	var js jsonschema.Schema
+	if err := json.Unmarshal(raw, &js); err != nil {
+		return nil
+	}
+	rs, err := js.Resolve(nil)
+	if err != nil {
+		return nil
+	}
+	return func(args map[string]any) bool {
+		raw, err := json.Marshal(args)
+		if err != nil {
+			return false
+		}
+		var inst any // the wire form: every number a float64, as a server sees it
+		if err := json.Unmarshal(raw, &inst); err != nil {
+			return false
+		}
+		return rs.Validate(inst) == nil
+	}
+}
+
+// hasRef reports whether a reference survived inlining: a cycle, a remote or
+// anchor ref, or one past the budget.
+func hasRef(node any) bool {
+	switch n := node.(type) {
+	case map[string]any:
+		for k, v := range n {
+			if k == "$ref" || k == "$dynamicRef" || k == "$recursiveRef" || hasRef(v) {
+				return true
+			}
+		}
+	case []any:
+		for _, v := range n {
+			if hasRef(v) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// gradeCases relaxes every expectation the validator disagrees with. It only
+// ever downgrades: a finding needs both readings of the schema to agree, so a
+// keyword the generator does not model (not, if/then, dependentRequired,
+// minProperties, ...) costs an assertion rather than a false finding.
+func gradeCases(cases []Case, check func(map[string]any) bool) []Case {
+	if check == nil {
+		return cases
+	}
+	for i, c := range cases {
+		if c.Expect == ExpectEither {
+			continue
+		}
+		if check(c.Args) != (c.Expect == ExpectAccept) {
+			cases[i].Expect = ExpectEither
+		}
+	}
+	return cases
+}
+
+func casesFor(s schema, check func(map[string]any) bool) []Case {
 	if s.typ() != "object" {
 		return []Case{probeCase()}
 	}
@@ -105,12 +186,12 @@ func casesFor(s schema) []Case {
 	// the server accept the carrier value, so every accept-expectation for this
 	// tool relaxes to "either".
 	base := map[string]any{}
-	accept := ExpectAccept
+	unproven := map[string]bool{}
 	for name, ps := range props {
 		v, ok := validValue(ps, 0)
 		base[name] = v
 		if !ok {
-			accept = ExpectEither
+			unproven[name] = true
 		}
 	}
 	// "required" is independent of "properties" (JSON Schema 2020-12 §6.5.3):
@@ -132,8 +213,28 @@ func casesFor(s schema) []Case {
 		}
 		base[name] = v
 		if !ok {
-			accept = ExpectEither
+			unproven[name] = true
 		}
+	}
+	// Filling in every optional field can break the schema itself, as with
+	// oneOf:[{required:[path]},{required:[url]}]. Required fields alone may not.
+	if check != nil && !check(base) {
+		minimal := map[string]any{}
+		for _, name := range required {
+			minimal[name] = base[name]
+		}
+		if check(minimal) {
+			base = minimal
+			for name := range unproven {
+				if _, kept := base[name]; !kept {
+					delete(unproven, name)
+				}
+			}
+		}
+	}
+	accept := ExpectAccept
+	if len(unproven) > 0 {
+		accept = ExpectEither
 	}
 	relax := func(e Expect) Expect {
 		if e == ExpectAccept {
@@ -312,6 +413,19 @@ func validValue(s schema, depth int) (any, bool) {
 	}
 	if en := s.enum(); len(en) > 0 {
 		return en[0], true
+	}
+	// A node that is only composition declares no type, but it is not "any
+	// value": Optional[int] from pydantic is anyOf:[{integer},{null}].
+	if branches := s.branches(); len(branches) > 0 {
+		for _, b := range branches {
+			if v, ok := validValue(b, depth+1); ok {
+				return v, true
+			}
+		}
+		return "mcpvet", false
+	}
+	if _, ok := s.m["allOf"].([]any); ok {
+		return validValue(mergeAllOf(s, depth), depth+1)
 	}
 	ts := s.types()
 	if len(ts) == 0 {
