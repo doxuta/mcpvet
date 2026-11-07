@@ -178,6 +178,39 @@ fails on v0.4.0; a mutation pass (output schema not checked, `const`/`default`
 read as schema, nested `$id` not skipped, anchors and remote refs checked,
 property names read as keywords) turns each red.
 
+### False findings on composed schemas (2026-11-07)
+
+Python MCP servers write `limit: Optional[int] = None`, and pydantic turns that
+into `{"anyOf":[{"type":"integer"},{"type":"null"}]}`: no `type` at the top. The
+generator read "no type" as "any value", sent `"mcpvet"`, and reported the
+server's correct refusal. A one-tool server on the official Python SDK (`mcp`
+2.x), v0.5.0 against this version:
+
+| | v0.5.0 | v0.6.0 |
+| --- | --- | --- |
+| `search(query: str, limit: Optional[int] = None)` | `rejected_valid`, exit 1 | 0 findings, exit 0; `valid` now sends `limit: 1` |
+
+Checking the expectations themselves, not the servers: 34 schema shapes
+(`oracleSchemas` in `oracle_test.go`), 323 generated cases, every accept and reject
+graded by Python's `jsonschema` (`Draft202012Validator`), which mcpvet does not use:
+
+| | asserted | wrong |
+| --- | --- | --- |
+| v0.5.0 | 121 | 25 |
+| v0.6.0 | 117 | 0 |
+
+The wrong ones were `anyOf`/`oneOf`/`allOf` on a property or in `items`,
+mutually exclusive fields filled in together, a `missing:x` case another branch
+accepts, and keywords the generator does not model (`not`, `if`/`then`,
+`dependentRequired`, `minProperties`, `prefixItems`, `contains`). Those 34 shapes
+were written by hand to break it, so 25 of 121 is not a rate on real servers.
+
+No change on `server-everything` (14 tools, 64 cases, 0 findings), or on
+`server-filesystem` and `mcp-server-time`: the same cases fail on both versions,
+because those are semantic refusals (see Limitations). A mutation pass (composition
+walk off, `allOf` off, grading off, required-only carrier off, `$ref` guard off,
+grading upgrades instead of downgrades) turns the new tests red, 6 of 6.
+
 ### Plugin and skill (2026-10-20)
 
 Installed from GitHub into a fresh, empty `HOME` (`mktemp -d`), Claude Code
@@ -247,6 +280,21 @@ claude plugin eval . --ablation with-without --no-publish
   (`ENOENT`). The schema says "any string" and the server is right to refuse;
   mcpvet cannot know that. Treat `rejected_valid` as a prompt to read, or
   `-skip` the tool.
+- **A keyword the generator does not model costs an assertion, silently.**
+  Accept and reject expectations are also graded by
+  [google/jsonschema-go](https://github.com/google/jsonschema-go), and a
+  disagreement relaxes the case to "must not crash". That removes false findings
+  and can only lose real ones: a Go-SDK server validates with the same library,
+  so a bug there hides an `accepted_invalid`. The report does not count relaxed
+  cases.
+- **A recursive schema gets no second opinion.** jsonschema-go v0.4.3 overflows
+  the stack on a `$ref` cycle and takes 2^n steps on a chain of branching refs,
+  and the schema comes from the server under audit, so it only sees schemas with
+  every `$ref` inlined. Any cycle, remote ref or anchor falls back to the
+  generator's own reading, and the false findings above can still happen there.
+- **No type-confusion case for `Optional[X]`.** A property that is only
+  `anyOf`/`oneOf` gets a valid value but no `wrongtype` case, so a server that
+  accepts a string for `Optional[int]` is not caught.
 - **No MCP tasks.** Tools that declare `execution.taskSupport: "required"` are
   listed and locked but never called. The Go SDK has no field for it (v1.7.0,
   v1.8.0), so mcpvet reads it off the raw `tools/list` response.
