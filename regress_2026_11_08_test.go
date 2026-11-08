@@ -20,6 +20,9 @@ func TestWrongTypeOnComposedProperty(t *testing.T) {
 		{"oneOf int|bool", `{"type":"object","properties":{"v":{"oneOf":[{"type":"integer"},{"type":"boolean"}]}}}`, "v", true, []string{"integer", "number", "boolean"}},
 		{"allOf only", `{"type":"object","properties":{"v":{"allOf":[{"type":"integer"},{"minimum":5}]}}}`, "v", true, []string{"integer", "number"}},
 		{"nested anyOf", `{"type":"object","properties":{"v":{"anyOf":[{"anyOf":[{"type":"string"},{"type":"integer"}]},{"type":"null"}]}}}`, "v", true, []string{"string", "integer", "number", "null"}},
+		// An enum member from a branch is accepted whatever its type: 12345 is
+		// the first candidate wrongType would try.
+		{"enum branch", `{"type":"object","properties":{"v":{"anyOf":[{"enum":[12345]},{"type":"null"}]}}}`, "v", true, []string{"null", "integer"}},
 		// A branch that accepts anything leaves no wrong type to send.
 		{"untyped branch", `{"type":"object","properties":{"v":{"anyOf":[{"type":"integer"},{"description":"anything"}]}}}`, "v", false, nil},
 		// "properties" without "type" accepts a string. The validator used to

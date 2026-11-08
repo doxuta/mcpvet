@@ -211,6 +211,48 @@ because those are semantic refusals (see Limitations). A mutation pass (composit
 walk off, `allOf` off, grading off, required-only carrier off, `$ref` guard off,
 grading upgrades instead of downgrades) turns the new tests red, 6 of 6.
 
+### Type confusion on `Optional[X]`, and recursive models (2026-11-08)
+
+v0.6.0 stopped sending a string as the *valid* value for `Optional[int]`, but
+still sent nothing as the *wrong* one: a property that is only
+`anyOf`/`oneOf`/`allOf` has no `type`, and `wrongType` read that as "any
+value". It now uses the union of the branches' declared types. Two servers on
+the official Python SDK (`mcp` 2.3.0), one tool each, `search(q: str, limit:
+int | None = None)`; the second publishes that schema but its handler takes
+`Any`:
+
+| | v0.6.0 | v0.7.0 |
+| --- | --- | --- |
+| handler typed `int \| None` | 11 cases, OK, exit 0 | 12 cases, OK, exit 0 (the new `wrongtype:limit` is refused) |
+| handler typed `Any` | 11 cases, OK, exit 0 | `accepted_invalid` on `wrongtype:limit`, exit 1 |
+
+Reading only declared types also closed a false finding that was already
+there. `typ()` infers `object` from a bare `properties`, but without `type` that
+schema accepts a string. The independent validator used to hide this, except
+that any recursive `$defs` entry turns it off for the whole tool, and then a
+correct server got `accepted_invalid`. The same switch-off let a recursive
+`$ref` that inlining leaves in place pass as "any value", so `valid` sent
+`{"next":"mcpvet"}` for a field that must be an object. That ref is now
+unproven, and `Optional[Self]` still gets a valid value (`null` where the cycle
+closes).
+
+Graded by Python's `jsonschema` as on 2026-11-07: the 34 `oracleSchemas`
+shapes plus 9 written today (composed, nested, enum and recursive), 347 cases:
+
+| | asserted | wrong |
+| --- | --- | --- |
+| v0.6.0 | 130 | 3 (one false `wrongtype` reject, two false `valid` accepts, all on recursive schemas) |
+| v0.7.0 | 140 | 0 |
+
+On the 34 old shapes alone, 117 asserted went to 122, all 5 new ones
+`wrongtype` rejects, 0 wrong on both versions. No change on real servers: the
+same cases and the same findings, line for line, from both versions on
+`server-everything` 2.2.1 (22 tools, 166 cases), `server-filesystem` 1.0.0 (temp
+root, 179 cases) and `mcp-server-time` 2026.11.4 (61 cases). A mutation pass
+(an untyped branch counted as typed, the composition walk off, the `allOf` loop
+off, the inferred type back, a surviving `$ref` proven valid, branch enum
+members dropped) turns `regress_2026_11_08_test.go` red, 6 of 6.
+
 ### Plugin and skill (2026-10-20)
 
 Installed from GitHub into a fresh, empty `HOME` (`mktemp -d`), Claude Code
@@ -291,10 +333,14 @@ claude plugin eval . --ablation with-without --no-publish
   the stack on a `$ref` cycle and takes 2^n steps on a chain of branching refs,
   and the schema comes from the server under audit, so it only sees schemas with
   every `$ref` inlined. Any cycle, remote ref or anchor falls back to the
-  generator's own reading, and the false findings above can still happen there.
-- **No type-confusion case for `Optional[X]`.** A property that is only
-  `anyOf`/`oneOf` gets a valid value but no `wrongtype` case, so a server that
-  accepts a string for `Optional[int]` is not caught.
+  generator's own reading. The known false findings there are fixed (see
+  2026-11-08); a keyword the generator does not model can still cause one.
+- **A recursive field gets less coverage than a flat one.** Its `valid` case
+  relaxes to "must not crash" unless a branch such as `null` closes the cycle,
+  and so does every accept case of that tool.
+- **`allOf` is read as its first member with a declared type.** For
+  `wrongtype` that over-counts what is accepted, which can only drop a case,
+  never add a false one.
 - **No MCP tasks.** Tools that declare `execution.taskSupport: "required"` are
   listed and locked but never called. The Go SDK has no field for it (v1.7.0,
   v1.8.0), so mcpvet reads it off the raw `tools/list` response.
