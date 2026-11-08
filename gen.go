@@ -406,6 +406,11 @@ func validValue(s schema, depth int) (any, bool) {
 	if depth > maxSchemaDepth {
 		return nil, false
 	}
+	// A $ref that survived inlining is a cycle (a recursive model): its target
+	// is not walked, so nothing here proves a value fits it.
+	if _, ok := s.m["$ref"]; ok {
+		return "mcpvet", false
+	}
 	// const is a one-member enum (JSON Schema 2020-12 §6.1.3): the only value
 	// the schema accepts, so the placeholder below would be a false finding.
 	if c, ok := s.m["const"]; ok {
@@ -600,17 +605,8 @@ func fitString(v string, minLen, maxLen int) string {
 // property that already accepts the value is not "input its own schema
 // forbids", so no case is generated.
 func wrongType(s schema) (any, bool) {
-	allowed := map[string]bool{}
-	for _, t := range s.types() {
-		allowed[t] = true
-	}
-	if len(allowed) == 0 {
-		if t := s.typ(); t != "" && t != "enum" {
-			allowed[t] = true
-		}
-	}
-	en := s.enum()
-	if len(allowed) == 0 && len(en) == 0 {
+	allowed, en := map[string]bool{}, []any(nil)
+	if !acceptedTypes(s, 0, allowed, &en) {
 		return nil, false
 	}
 	candidates := []struct {
@@ -636,6 +632,56 @@ func wrongType(s schema) (any, bool) {
 		return c.v, true
 	}
 	return nil, false
+}
+
+// acceptedTypes adds the JSON types and enum members s accepts to allowed and
+// en, and reports false when s accepts a value of any type. A node that is only
+// composition is not untyped: Optional[int] is anyOf:[{integer},{null}], so it
+// accepts the union of its branches, and a string is still a wrong type.
+//
+// Every answer is an upper bound on what s accepts, which can only cost a case,
+// never a false finding: a node's own type bounds its branches, any one allOf
+// member bounds the whole, and oneOf accepts no more than anyOf would.
+func acceptedTypes(s schema, depth int, allowed map[string]bool, en *[]any) bool {
+	if depth > maxSchemaDepth {
+		return false
+	}
+	// Declared types only: typ() infers "object" from a bare "properties", but
+	// without "type" that schema accepts a string (see typeLabel).
+	ts := s.types()
+	if len(ts) > 0 || len(s.enum()) > 0 {
+		for _, t := range ts {
+			allowed[t] = true
+		}
+		*en = append(*en, s.enum()...)
+		return true
+	}
+	var branches []any
+	for _, k := range []string{"oneOf", "anyOf"} {
+		branches = append(branches, listOf(s.m[k])...)
+	}
+	if len(branches) > 0 {
+		for _, raw := range branches {
+			b, ok := asSchema(raw)
+			if !ok || !acceptedTypes(b, depth+1, allowed, en) {
+				return false
+			}
+		}
+		return true
+	}
+	for _, raw := range listOf(s.m["allOf"]) {
+		if b, ok := asSchema(raw); ok {
+			a, e := map[string]bool{}, []any(nil)
+			if acceptedTypes(b, depth+1, a, &e) {
+				for t := range a {
+					allowed[t] = true
+				}
+				*en = append(*en, e...)
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func inEnum(en []any, v any) bool {
