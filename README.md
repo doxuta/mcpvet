@@ -253,6 +253,31 @@ root, 179 cases) and `mcp-server-time` 2026.11.4 (61 cases). A mutation pass
 off, the inferred type back, a surviving `$ref` proven valid, branch enum
 members dropped) turns `regress_2026_11_08_test.go` red, 6 of 6.
 
+### One crash, reported once (2026-11-14)
+
+Until v0.7.0 a fuzz case that killed the server was followed by every later
+case of every tool failing on the dead session, and each was reported as a
+`crash`. The test server with one tool that exits when `n` is not a number
+(`MCPVET_CRASH_TOOL=1`, `fuzz -timeout 2s -skip slow`):
+
+| | v0.7.0 | v0.7.1 |
+| --- | --- | --- |
+| `crash` findings | 27: 2 on `boom`, 13 on `greet`, 12 on `lookup_city` | 1, on `boom` (`1 later case(s) of this tool not run`) |
+| `lookup_city` accepts input its schema forbids | not seen | 3 `accepted_invalid` |
+| exit | 1 | 1 |
+
+`greet` and `lookup_city` never crash; they were called after the server was
+gone. fuzz now records the crash once, skips the rest of that tool's cases,
+and starts the server again before the next tool. If it does not start again,
+the crash is still reported and the tools never called are listed (`not
+fuzzed (the server did not start again after the crash: ...)`, JSON
+`not_run`, `restart_error`) instead of the run ending in a connect error.
+`regress_2026_11_14_test.go` fails on v0.7.0; a mutation pass (no restart,
+no skip of the crashing tool's cases, a failed restart returned as an error,
+the not-run line dropped or printed unescaped) turns a test red, 5 of 5. Not
+measured: a real server that crashes; the servers in the tables above never
+did, so their output is unchanged.
+
 ### Plugin and skill (2026-10-20)
 
 Installed from GitHub into a fresh, empty `HOME` (`mktemp -d`), Claude Code
@@ -359,6 +384,10 @@ claude plugin eval . --ablation with-without --no-publish
   SIGTERM the SDK closes the server's stdin, waits 5 s, then sends SIGTERM to
   that one process; a server that spawned its own children and ignores
   SIGTERM can still leave them behind.
+- **One crash per tool.** After a case kills the server, the rest of that
+  tool's cases are not run, so a second, different crash in the same tool is
+  not seen until the first is fixed. The restart runs the server command
+  again, with whatever side effects starting it has.
 - **stdio only.** No Streamable HTTP transport yet.
 - Output schemas, resources and prompts are not locked. Output schemas are
   checked for `unresolved_ref` only.
