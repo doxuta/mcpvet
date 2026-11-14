@@ -149,12 +149,18 @@ func printReport(w io.Writer, r *mcpvet.Report, mode string) {
 			fmt.Fprintf(w, " ! %-24s %-18s %s\n     case: %s\n", mcpvet.SafeText(f.Tool), f.Kind, f.Detail, mcpvet.SafeText(f.Case))
 		}
 	}
-	if len(r.TaskOnly) > 0 && mode == "fuzz" {
-		names := make([]string, len(r.TaskOnly))
-		for i, n := range r.TaskOnly {
+	safeList := func(ns []string) string {
+		names := make([]string, len(ns))
+		for i, n := range ns {
 			names[i] = mcpvet.SafeText(n)
 		}
-		fmt.Fprintf(w, "\nnot fuzzed (execution.taskSupport is required; mcpvet does not speak MCP tasks): %s\n", strings.Join(names, ", "))
+		return strings.Join(names, ", ")
+	}
+	if len(r.TaskOnly) > 0 && mode == "fuzz" {
+		fmt.Fprintf(w, "\nnot fuzzed (execution.taskSupport is required; mcpvet does not speak MCP tasks): %s\n", safeList(r.TaskOnly))
+	}
+	if len(r.NotRun) > 0 {
+		fmt.Fprintf(w, "\nnot fuzzed (the server did not start again after the crash: %s): %s\n", r.RestartError, safeList(r.NotRun))
 	}
 	if !r.Failed() {
 		fmt.Fprintln(w, "\nOK — tool surface matches the lockfile"+fuzzSuffix(mode))

@@ -36,6 +36,17 @@ func text(s string) *mcp.CallToolResult {
 }
 
 func main() {
+	// MCPVET_START_ONCE names a marker file: the first start creates it and
+	// every later start exits at once, like a server whose crash left a stale
+	// lock behind.
+	if p := os.Getenv("MCPVET_START_ONCE"); p != "" {
+		if _, err := os.Stat(p); err == nil {
+			os.Exit(3)
+		}
+		if err := os.WriteFile(p, nil, 0o600); err != nil {
+			log.Fatal(err)
+		}
+	}
 	// MCPVET_SLOW_START delays startup, like `npx -y` downloading a server.
 	if d, err := time.ParseDuration(os.Getenv("MCPVET_SLOW_START")); err == nil {
 		time.Sleep(d)
@@ -92,6 +103,28 @@ func main() {
 					return text("ok"), nil, nil
 				})
 		}
+	}
+
+	// MCPVET_CRASH_TOOL adds a tool that kills the whole server on any call
+	// whose "n" is missing or not a number, like a handler that type-asserts
+	// a field without checking it.
+	if os.Getenv("MCPVET_CRASH_TOOL") != "" {
+		s.AddTool(&mcp.Tool{
+			Name:        "boom",
+			Description: "Exits the process unless n is a number.",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"n": map[string]any{"type": "integer"}},
+				"required":   []any{"n"},
+			},
+		}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			var a map[string]any
+			_ = json.Unmarshal(req.Params.Arguments, &a)
+			if _, ok := a["n"].(float64); !ok {
+				os.Exit(2)
+			}
+			return text("ok"), nil
+		})
 	}
 
 	// A tool that errors on every input, including input its own schema accepts.

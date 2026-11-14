@@ -38,7 +38,11 @@ type Report struct {
 	// so cannot be called without MCP tasks, which mcpvet does not speak.
 	// fuzz leaves them out rather than reporting their refusals.
 	TaskOnly []string `json:"task_only,omitempty"`
-	Lock     Lock     `json:"-"`
+	// NotRun are tools fuzz never called because the server crashed and
+	// did not start again (RestartError says why).
+	NotRun       []string `json:"not_run,omitempty"`
+	RestartError string   `json:"restart_error,omitempty"`
+	Lock         Lock     `json:"-"`
 }
 
 // Failed reports whether the run should fail CI.
@@ -83,21 +87,29 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 		opts.StartTimeout = 60 * time.Second
 	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "mcpvet", Version: "v0.1.0"}, nil)
-	cmd := exec.Command(opts.Command, opts.Args...)
 	tap := &taskTap{support: map[string]string{}}
+	// connect starts the server; fuzz calls it again after a crash.
 	// The handshake and the listing are bounded too: a command that never
 	// answers initialize (a server waiting on a prompt, or not an MCP server
 	// at all) otherwise hangs a CI job until the runner kills it.
-	connCtx, cancel := context.WithTimeout(ctx, opts.StartTimeout)
-	session, err := client.Connect(connCtx, tapTransport{&mcp.CommandTransport{Command: cmd}, tap}, nil)
-	cancel()
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			return nil, fmt.Errorf("connect: no initialize response within %s — is %q an MCP stdio server?", opts.StartTimeout, opts.Command)
+	connect := func() (*mcp.ClientSession, error) {
+		cmd := exec.Command(opts.Command, opts.Args...)
+		connCtx, cancel := context.WithTimeout(ctx, opts.StartTimeout)
+		defer cancel()
+		session, err := client.Connect(connCtx, tapTransport{&mcp.CommandTransport{Command: cmd}, tap}, nil)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				return nil, fmt.Errorf("connect: no initialize response within %s — is %q an MCP stdio server?", opts.StartTimeout, opts.Command)
+			}
+			return nil, fmt.Errorf("connect: %w", err)
 		}
-		return nil, fmt.Errorf("connect: %w", err)
+		return session, nil
 	}
-	defer session.Close()
+	session, err := connect()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { session.Close() }()
 
 	info := ServerInfo{Name: "unknown"}
 	if init := session.InitializeResult(); init != nil && init.ServerInfo != nil {
@@ -171,6 +183,13 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 		return report, nil
 	}
 
+	// A crash kills the session, and a dead session fails every later call:
+	// without a restart one crash was reported once per remaining case, on
+	// tools that never crashed, and their real findings were never seen.
+	// So the server is started again before the next tool, and the rest of
+	// the crashing tool's cases are skipped (one crash per tool, at most one
+	// restart per tool).
+	dead := false
 	for _, s := range surfaces {
 		if skip[s.Name] {
 			continue
@@ -179,16 +198,43 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 			report.TaskOnly = append(report.TaskOnly, s.Name)
 			continue
 		}
-		for _, c := range GenerateCases(s.InputSchema) {
+		if dead && report.RestartError == "" {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			session.Close()
+			next, err := connect()
+			if err != nil {
+				report.RestartError = SafeText(err.Error())
+			} else {
+				session, dead = next, false
+			}
+		}
+		if dead {
+			report.NotRun = append(report.NotRun, s.Name)
+			continue
+		}
+		cases := GenerateCases(s.InputSchema)
+		for i, c := range cases {
 			// A cancelled run (SIGINT/SIGTERM in the CLI) stops here rather
 			// than reporting every remaining case as a hang.
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
 			report.CaseCount++
-			if f := runCase(ctx, session, s.Name, c, opts.Timeout); f != nil {
-				report.Findings = append(report.Findings, *f)
+			f := runCase(ctx, session, s.Name, c, opts.Timeout)
+			if f == nil {
+				continue
 			}
+			if f.Kind == "crash" {
+				dead = true
+				if rest := len(cases) - i - 1; rest > 0 {
+					f.Detail += fmt.Sprintf(" (%d later case(s) of this tool not run)", rest)
+				}
+				report.Findings = append(report.Findings, *f)
+				break
+			}
+			report.Findings = append(report.Findings, *f)
 		}
 	}
 	return report, nil

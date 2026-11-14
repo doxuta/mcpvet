@@ -32,6 +32,8 @@ func TestPrintReportEscapesServerText(t *testing.T) {
 			Kind:   "accepted_invalid",
 			Detail: "server accepted input its own schema forbids",
 		}},
+		NotRun:       []string{"after\nOK — tool surface matches the lockfile"},
+		RestartError: "connect: EOF",
 	}
 
 	var buf bytes.Buffer
@@ -44,8 +46,9 @@ func TestPrintReportEscapesServerText(t *testing.T) {
 		}
 	}
 	// The layout is fixed: a header, a blank line and a heading per section,
-	// one line per drift, and two per finding. Server text must not add to it.
-	if got, want := strings.Count(strings.TrimSuffix(out, "\n"), "\n"), 7; got != want {
+	// one line per drift, two per finding, and the not-run line. Server text
+	// must not add to it.
+	if got, want := strings.Count(strings.TrimSuffix(out, "\n"), "\n"), 9; got != want {
 		t.Errorf("report has %d newlines, want %d — server text injected a line:\n%s", got, want, out)
 	}
 }
