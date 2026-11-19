@@ -75,7 +75,10 @@ npx skills add doxuta/mcpvet
 `check` exits non-zero on **breaking** drift (tool removed, schema shape
 changed, new required field, description rewritten, a tool that now must be
 called as an MCP task, a flipped behaviour hint such as `idempotentHint`), on a tool whose input schema is not `type: "object"`
-(`schema_not_object`: the agent sees no parameters), and on a `$ref` in an
+(`schema_not_object`: the agent sees no parameters), on an input schema whose
+root carries `anyOf`, `oneOf` or `allOf` (`root_combinator`: the Anthropic
+Messages API refuses it, see 2026-11-19) or describes an object without saying
+`type: "object"` (`root_not_object`), and on a `$ref` in an
 input or output schema that points at nothing (`unresolved_ref`). Cosmetic changes are
 reported but don't fail. `fuzz` additionally exits non-zero on findings.
 
@@ -278,6 +281,41 @@ the not-run line dropped or printed unescaped) turns a test red, 5 of 5. Not
 measured: a real server that crashes; the servers in the tables above never
 did, so their output is unchanged.
 
+### Combinators at the schema root (2026-11-19)
+
+The Anthropic Messages API refuses a tool whose `input_schema` has `anyOf`,
+`oneOf` or `allOf` at the top level, with or without `"type": "object"` next to
+it, and the tool list goes out on every request, so one such tool fails every
+turn while the server is connected:
+`input_schema does not support oneOf, allOf, or anyOf at the top level` (400).
+That is how it is reported in
+[samvallad33/vestige#846](https://github.com/samvallad33/vestige/issues/846)
+(vestige 6.0.0 works, 6.2.0 added root `allOf` blocks to three tools and broke
+every request), [aaif-goose/goose#12773](https://github.com/aaif-goose/goose/issues/12773)
+and [anomalyco/opencode#47543](https://github.com/anomalyco/opencode/issues/47543);
+Claude Code 2.1.328 fixed such tools going missing on third-party providers.
+Not reproduced here: this run has no API key.
+
+mcpvet only reported a root it could not generate cases from, so these
+passed. The test server advertising vestige 6.2.2's shape, reduced
+(`MCPVET_ROOT_SCHEMA`, `{"type":"object", …, "allOf":[{"if":…,"then":…}]}`):
+
+| | v0.7.1 | v0.8.0 |
+| --- | --- | --- |
+| `lock` | exit 0, no warning | exit 0, `mcpvet: warning: rooted: input schema root carries allOf: the Anthropic Messages API refuses …` |
+| `check` | `OK — tool surface matches the lockfile`, exit 0 | `root_combinator` finding, exit 1 |
+
+A root that describes an object without `"type": "object"` (a bare
+`properties`, a `$ref`) is now `root_not_object`: MCP requires the type
+(`schema.ts` 2026-07-28, `Tool.inputSchema`). Only the root is read, before any
+`$ref` is inlined or `allOf` merged; a combinator under `properties` or `$defs`,
+such as pydantic's `Optional[int]`, is not a finding. No false positives on the
+four reference servers at npm `latest` (filesystem 2.4.0, memory 2.2.1,
+everything 2.3.1, sequential-thinking 2.2.0: 48 tools, `lock` printed no
+warning). `regress_2026_11_19_test.go` fails on v0.7.1 (7 roots plus the fuzz
+case); its controls (nested `anyOf`, `anyOf` in `$defs`, a plain object, and two
+schemas that stay `schema_not_object` alone) pass on both.
+
 ### Plugin and skill (2026-10-20)
 
 Installed from GitHub into a fresh, empty `HOME` (`mktemp -d`), Claude Code
@@ -388,6 +426,12 @@ claude plugin eval . --ablation with-without --no-publish
   tool's cases are not run, so a second, different crash in the same tool is
   not seen until the first is fixed. The restart runs the server command
   again, with whatever side effects starting it has.
+- **`root_combinator` gates on one API's rule.** A root `anyOf`/`oneOf`/`allOf`
+  is valid JSON Schema and valid MCP; the finding is there because the
+  Anthropic Messages API refuses it (reported, not reproduced here) and clients
+  forward schemas as they are. A server that already ships one goes red on its
+  first `check` with v0.8.0. The fix on the server's side: move the per-case
+  shape into `properties`, or into the description.
 - **stdio only.** No Streamable HTTP transport yet.
 - Output schemas, resources and prompts are not locked. Output schemas are
   checked for `unresolved_ref` only.

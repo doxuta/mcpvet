@@ -30,6 +30,10 @@ mcpvet lock -lock .mcpvet/filesystem.lock.json -- npx -y @modelcontextprotocol/s
 One lockfile per server under `.mcpvet/`. Commit it next to `.mcp.json`.
 Read every `mcpvet: warning:` line on stderr to the user. `schema_not_object` means
 the tool advertises no usable input schema: the agent sees no parameters.
+`root_combinator` means the input schema has `anyOf`, `oneOf` or `allOf` at its
+root: the Anthropic API refuses the whole request while that tool is listed, so
+every turn fails, not just calls to it. `root_not_object` means the root
+describes an object without `"type": "object"`, which MCP requires.
 `unresolved_ref` means a schema points at a definition it never ships; in an
 `outputSchema` that makes every call to the tool fail in Claude Code. Tell the user
 which tool; it is the server's bug to fix.
