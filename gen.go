@@ -64,6 +64,39 @@ func CoverageGap(cases []Case) string {
 	return ""
 }
 
+// RootGap explains why the root of an input schema that mcpvet can generate
+// cases from still breaks the tool for agents, or returns "" for both. It reads
+// the root as the server sent it, before any $ref is inlined or allOf merged
+// (merging deletes allOf), and only the root: a combinator nested under
+// "properties" or "$defs", such as pydantic's Optional[int], is fine.
+//
+//   - root_combinator: the root carries anyOf, oneOf or allOf. The Anthropic
+//     Messages API refuses that in a tool's input_schema with a 400, and a
+//     client that forwards MCP schemas verbatim fails every request in the
+//     session, not only calls to that tool.
+//   - root_not_object: no combinator, but the root's "type" is not "object",
+//     which MCP requires (the Go SDK refuses to register such a schema).
+func RootGap(input any) (kind, detail string) {
+	m, _ := input.(map[string]any)
+	typed := m["type"] == "object"
+	for _, k := range []string{"anyOf", "oneOf", "allOf"} {
+		if _, ok := m[k]; !ok {
+			continue
+		}
+		detail = "input schema root carries " + k + ": the Anthropic Messages API refuses a top-level " +
+			"anyOf/oneOf/allOf in input_schema (400), so a client that forwards it fails every request " +
+			"while this server is connected; Claude Code before 2.1.328 dropped the tool on third-party providers"
+		if !typed {
+			detail += `; the root also has no "type": "object", which MCP requires`
+		}
+		return "root_combinator", detail
+	}
+	if !typed {
+		return "root_not_object", `input schema root has no "type": "object", which MCP requires`
+	}
+	return "", ""
+}
+
 // GenerateCases produces valid, boundary, and hostile inputs for a tool from
 // its input schema. Valid cases exercise the happy path; boundary cases probe
 // min/max edges; hostile cases (type confusion, oversized strings, missing

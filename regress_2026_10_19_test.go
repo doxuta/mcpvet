@@ -51,7 +51,8 @@ func TestUntypedInputSchemaIsAFinding(t *testing.T) {
 }
 
 // A schema that resolves to an object only through oneOf branches or a local
-// $ref is well-formed and must not be flagged.
+// $ref generates cases, so it is not schema_not_object. Its root is still a
+// finding, root_combinator or root_not_object (regress_2026_11_19_test.go).
 func TestObjectSchemasAreNotFlagged(t *testing.T) {
 	for _, s := range []string{
 		`{"type":"object"}`,

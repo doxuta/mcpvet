@@ -200,6 +200,34 @@ func main() {
 		})
 	}
 
+	// MCPVET_ROOT_SCHEMA advertises the tool "rooted" with this JSON as its
+	// input schema, replaced on the way out of tools/list like "untyped" above:
+	// the SDK only registers a root of type "object", and a server that does
+	// not use it can send any root, such as a bare anyOf from a union type.
+	if raw := os.Getenv("MCPVET_ROOT_SCHEMA"); raw != "" {
+		var root map[string]any
+		if err := json.Unmarshal([]byte(raw), &root); err != nil {
+			log.Fatalf("MCPVET_ROOT_SCHEMA: %v", err)
+		}
+		mcp.AddTool(s, &mcp.Tool{Name: "rooted", Description: "Looks something up."},
+			func(ctx context.Context, req *mcp.CallToolRequest, a map[string]any) (*mcp.CallToolResult, any, error) {
+				return text("found"), nil, nil
+			})
+		s.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+			return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+				res, err := next(ctx, method, req)
+				if lt, ok := res.(*mcp.ListToolsResult); ok && err == nil {
+					for _, t := range lt.Tools {
+						if t.Name == "rooted" {
+							t.InputSchema = root
+						}
+					}
+				}
+				return res, err
+			}
+		})
+	}
+
 	// A tool whose outputSchema points at a $defs entry it never defines — what
 	// Google's Stitch MCP server sent for upload_design_md. Claude Code refuses
 	// the whole tools/list over it ("can't resolve reference"), so every tool

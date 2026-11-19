@@ -22,7 +22,7 @@ import (
 type Finding struct {
 	Tool     string `json:"tool"`
 	Case     string `json:"case"`
-	Kind     string `json:"kind"` // crash, hang, accepted_invalid, rejected_valid, schema_not_object, unresolved_ref
+	Kind     string `json:"kind"` // crash, hang, accepted_invalid, rejected_valid, schema_not_object, root_combinator, root_not_object, unresolved_ref
 	Detail   string `json:"detail"`
 	Breaking bool   `json:"breaking"`
 }
@@ -155,9 +155,13 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 	}
 	// A schema nothing can be generated from is checked without calling the
 	// tool, so lock and check report it too: the agent sees no parameters.
+	// One that does describe an object, but through a root that agents trip
+	// on, is reported once as root_combinator or root_not_object (RootGap).
 	for _, s := range surfaces {
 		if gap := CoverageGap(GenerateCases(s.InputSchema)); gap != "" {
 			report.Findings = append(report.Findings, Finding{s.Name, "inputSchema", "schema_not_object", gap, true})
+		} else if kind, gap := RootGap(s.InputSchema); kind != "" {
+			report.Findings = append(report.Findings, Finding{s.Name, "inputSchema", kind, gap, true})
 		}
 	}
 	// A $ref that points at nothing makes the schema invalid. In outputSchema
