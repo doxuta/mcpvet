@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,7 +24,7 @@ import (
 type Finding struct {
 	Tool     string `json:"tool"`
 	Case     string `json:"case"`
-	Kind     string `json:"kind"` // crash, hang, accepted_invalid, rejected_valid, schema_not_object, root_combinator, root_not_object, unresolved_ref
+	Kind     string `json:"kind"` // crash, hang, accepted_invalid, rejected_valid, schema_not_object, root_combinator, root_not_object, unresolved_ref, name_refused
 	Detail   string `json:"detail"`
 	Breaking bool   `json:"breaking"`
 }
@@ -158,6 +160,9 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 	// One that does describe an object, but through a root that agents trip
 	// on, is reported once as root_combinator or root_not_object (RootGap).
 	for _, s := range surfaces {
+		if gap := NameGap(s.Name); gap != "" {
+			report.Findings = append(report.Findings, Finding{s.Name, "name", "name_refused", gap, true})
+		}
 		if gap := CoverageGap(GenerateCases(s.InputSchema)); gap != "" {
 			report.Findings = append(report.Findings, Finding{s.Name, "inputSchema", "schema_not_object", gap, true})
 		} else if kind, gap := RootGap(s.InputSchema); kind != "" {
@@ -388,4 +393,23 @@ func hints(a *mcp.ToolAnnotations) *Hints {
 		return nil
 	}
 	return &Hints{ReadOnly: &a.ReadOnlyHint, Destructive: a.DestructiveHint, Idempotent: &a.IdempotentHint, OpenWorld: a.OpenWorldHint}
+}
+
+// apiToolName is the Anthropic Messages API's rule for a tool name, quoted
+// from its tool definition docs. MCP's naming guidance also allows the dot.
+var apiToolName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
+
+// NameGap says why the Anthropic Messages API would refuse a tool name, or ""
+// if it accepts it. Clients that forward names as they are send the whole
+// tool list on every request, so one such name fails every turn.
+func NameGap(name string) string {
+	if apiToolName.MatchString(name) {
+		return ""
+	}
+	gap := "name does not match ^[a-zA-Z0-9_-]{1,128}$, the Anthropic Messages API's rule for tool names: " +
+		"clients that forward names as they are get a 400 on every request"
+	if strings.Contains(name, ".") {
+		gap += " (MCP's naming guidance allows the dot; the API does not)"
+	}
+	return gap
 }

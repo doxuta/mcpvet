@@ -200,6 +200,15 @@ func main() {
 		})
 	}
 
+	// MCPVET_TOOL_NAME adds a tool with this name. The SDK only logs a name
+	// outside MCP's guidance and registers it anyway, as servers in the wild do.
+	if name := os.Getenv("MCPVET_TOOL_NAME"); name != "" {
+		mcp.AddTool(s, &mcp.Tool{Name: name, Description: "Lists users."},
+			func(ctx context.Context, req *mcp.CallToolRequest, a map[string]any) (*mcp.CallToolResult, any, error) {
+				return text("listed"), nil, nil
+			})
+	}
+
 	// MCPVET_ROOT_SCHEMA advertises the tool "rooted" with this JSON as its
 	// input schema, replaced on the way out of tools/list like "untyped" above:
 	// the SDK only registers a root of type "object", and a server that does
