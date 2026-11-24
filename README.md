@@ -78,8 +78,10 @@ called as an MCP task, a flipped behaviour hint such as `idempotentHint`), on a 
 (`schema_not_object`: the agent sees no parameters), on an input schema whose
 root carries `anyOf`, `oneOf` or `allOf` (`root_combinator`: the Anthropic
 Messages API refuses it, see 2026-11-19) or describes an object without saying
-`type: "object"` (`root_not_object`), and on a `$ref` in an
-input or output schema that points at nothing (`unresolved_ref`). Cosmetic changes are
+`type: "object"` (`root_not_object`), on a `$ref` in an
+input or output schema that points at nothing (`unresolved_ref`), and on a tool
+name outside `^[a-zA-Z0-9_-]{1,128}$` (`name_refused`: the Anthropic Messages
+API refuses it, see 2026-11-24). Cosmetic changes are
 reported but don't fail. `fuzz` additionally exits non-zero on findings.
 
 ## What it generates
@@ -281,6 +283,38 @@ the not-run line dropped or printed unescaped) turns a test red, 5 of 5. Not
 measured: a real server that crashes; the servers in the tables above never
 did, so their output is unchanged.
 
+### Tool names the API refuses (2026-11-24)
+
+The Anthropic Messages API's tool definition says the name "Must match the
+regex `^[a-zA-Z0-9_-]{1,128}$`" (platform.claude.com, define-tools, read
+2026-11-24). MCP's naming guidance also allows the dot and lists
+`admin.tools.list` as a valid example, so a server that follows MCP can ship a
+name that a client forwarding names as they are turns into a 400 on every
+request: `tools.19.custom.name: String should match pattern
+'^[a-zA-Z0-9_-]{1,128}$'` with dotted MCP tool names in
+[github/copilot-cli#2581](https://github.com/github/copilot-cli/issues/2581),
+the same through Bedrock in [coder/coder#26325](https://github.com/coder/coder/issues/26325).
+Not reproduced here: this run has no API key. Clients that sanitize names before
+sending them are not affected.
+
+mcpvet locked such names without a word. The test server with a tool named
+`admin.tools.list` (`MCPVET_TOOL_NAME`), the lockfile written by v0.8.0:
+
+| | v0.8.0 | v0.9.0 |
+| --- | --- | --- |
+| `lock` | exit 0, no warning | exit 0, `mcpvet: warning: admin.tools.list: name does not match ^[a-zA-Z0-9_-]{1,128}$, …` |
+| `check` | `OK — tool surface matches the lockfile`, exit 0 | `name_refused` finding, exit 1 |
+
+No false positives on the four reference servers at npm `latest` (filesystem
+2.4.0, memory 2.2.1, everything 2.3.1, sequential-thinking 2.2.0: 48 tools,
+`lock` printed no warning). `regress_2026_11_24_test.go` fails on v0.8.0 (a
+dot, a space, a slash, a non-ASCII name, 129 characters); its controls
+(`getUser`, `DATA_EXPORT_v2`, `x-y_z`, 128 characters) pass on both.
+
+The same docs list more schema limits only for `strict: true` tools
+(structured outputs: no recursive schemas, no `oneOf`, …). A client opts into
+strict, not the server, so those are not findings.
+
 ### Combinators at the schema root (2026-11-19)
 
 The Anthropic Messages API refuses a tool whose `input_schema` has `anyOf`,
@@ -432,6 +466,11 @@ claude plugin eval . --ablation with-without --no-publish
   forward schemas as they are. A server that already ships one goes red on its
   first `check` with v0.8.0. The fix on the server's side: move the per-case
   shape into `properties`, or into the description.
+- **`name_refused` gates on one API's rule, like `root_combinator`.** A dot is
+  allowed by MCP's naming guidance; the finding is there because the Anthropic
+  Messages API refuses it and some clients forward names as they are. Clients
+  that sanitize names first never see it. The fix on the server's side: `_` or
+  `-` instead of the dot.
 - **stdio only.** No Streamable HTTP transport yet.
 - Output schemas, resources and prompts are not locked. Output schemas are
   checked for `unresolved_ref` only.

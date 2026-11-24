@@ -35,7 +35,10 @@ root: the Anthropic API refuses the whole request while that tool is listed, so
 every turn fails, not just calls to it. `root_not_object` means the root
 describes an object without `"type": "object"`, which MCP requires.
 `unresolved_ref` means a schema points at a definition it never ships; in an
-`outputSchema` that makes every call to the tool fail in Claude Code. Tell the user
+`outputSchema` that makes every call to the tool fail in Claude Code.
+`name_refused` means the tool name has a character outside `a-zA-Z0-9_-` (often
+a dot) or more than 128: clients that forward names as they are get a 400 from
+the Anthropic API on every request. Tell the user
 which tool; it is the server's bug to fix.
 
 ## 3. Check it after any upgrade, and in CI
