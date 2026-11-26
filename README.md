@@ -101,10 +101,13 @@ invalid.
 
 ## Proof
 
-Measured 2026-10-19 against the four reference servers in
+Measured against the four reference servers in
 [modelcontextprotocol/servers](https://github.com/modelcontextprotocol/servers),
-run through `npx` exactly as in the examples above. `1.0.0` is npm's `latest`
-for all four (published 2026-10-11).
+run through `npx` exactly as in the examples above. The drift and
+`schema_not_object` rows are from 2026-10-19, when `1.0.0` was npm's `latest`
+for all four. The `fuzz` rows were re-run 2026-11-26 with v0.9.1 against npm's
+`latest` then (filesystem 2.4.0, everything 2.3.1, sequential-thinking 2.2.0,
+all published 2026-11-18).
 
 | What | Server | Result |
 | --- | --- | --- |
@@ -113,9 +116,9 @@ for all four (published 2026-10-11).
 | | `server-everything` 2026.1.26 | 9: every tool dropped `additionalProperties: false`, so each schema now accepts more |
 | `schema_not_object` | `server-filesystem` 2025.8.21 | 13 of 14 tools advertised `{"$schema": "…"}` and nothing else. Before 2026-10-19 mcpvet locked this and `check` printed OK |
 | | all four at `1.0.0` | 0 |
-| `fuzz` | `server-sequential-thinking` | 1 tool, 46 cases, 0 findings |
-| | `server-everything` | 14 tools, 64 cases, 0 findings; `simulate-research-query` not fuzzed (requires MCP tasks). Before 2026-10-19 it was fuzzed with plain calls and reported as a false `rejected_valid`, failing the run |
-| | `server-filesystem` (root: an empty temp dir) | 14 tools, 179 cases, 10 `rejected_valid` — see Limitations |
+| `fuzz` | `server-sequential-thinking` 2.2.0 | 1 tool, 46 cases, 0 findings |
+| | `server-everything` 2.3.1 | 22 tools, 102 cases, 1 false `rejected_valid` on `get-roots-list` (see Limitations); 7 tools not fuzzed because they need a client capability (see 2026-11-26) |
+| | `server-filesystem` 2.4.0 (root: an empty temp dir) | 16 tools, 243 cases, 20 `rejected_valid` — see Limitations |
 
 `server-memory` was locked and checked but not fuzzed: its tools write to the
 server's own memory file. Each of the two 2026-10-19 bugs has a regression
@@ -283,6 +286,31 @@ the not-run line dropped or printed unescaped) turns a test red, 5 of 5. Not
 measured: a real server that crashes; the servers in the tables above never
 did, so their output is unchanged.
 
+### Servers on MCP 2026-07-28 (2026-11-26)
+
+MCP 2026-07-28 has no `ping`. `server-everything` 2.3.1 (npm `latest`,
+2026-11-18) speaks it and answers `ping` with `-32601 Method not found`. After
+a tool call failed, mcpvet asked `ping` whether the server was still alive.
+So every JSON-RPC error from such a server read as a dead session. Each
+"crash" also skipped the rest of that tool's cases. Seven of the eight tools
+were answering `-32021`, which the 2026-07-28 schema defines as
+`MissingRequiredClientCapabilityError`: the tool needs elicitation, sampling or
+the tasks extension, and mcpvet's client declares none of them. That is the
+server doing what the spec says.
+
+| | v0.9.0 | v0.9.1 |
+| --- | --- | --- |
+| `fuzz` on `server-everything` 2.3.1 | 8 `crash`, exit 1 | 1 `rejected_valid` (`get-roots-list`, see Limitations), 7 listed as `not fuzzed (… MCP error -32021)` with their capabilities |
+
+An error reply to `ping` now counts as a live server. Only a closed
+connection, or a `ping` that gets no answer, counts as a crash. `regress_2026_11_26_test.go` fails on v0.9.0: a tool that rejects bad
+input with `-32602` on a server without `ping` (a false crash), and a tool that
+answers `-32021` (a false `rejected_valid`, or a crash with no `ping`). Its
+controls pass on both: the same tool on a server with `ping`, and a server
+without `ping` that exits mid-call, which is still one `crash`. A mutation pass
+(the `ping` reply read as death again, the `-32021` check off, the wrong code,
+no stop after the first `-32021`) turns it red, 4 of 4.
+
 ### Tool names the API refuses (2026-11-24)
 
 The Anthropic Messages API's tool definition says the name "Must match the
@@ -414,11 +442,21 @@ claude plugin eval . --ablation with-without --no-publish
 
 ## Limitations
 
-- **Semantic constraints are invisible to a schema.** The 10 `server-filesystem`
-  findings are all valid-shaped paths that do not exist under the allowed root
-  (`ENOENT`). The schema says "any string" and the server is right to refuse;
-  mcpvet cannot know that. Treat `rejected_valid` as a prompt to read, or
-  `-skip` the tool.
+- **Semantic constraints are invisible to a schema.** The `server-filesystem`
+  findings (10 on 1.0.0, 20 on 2.4.0) are valid-shaped paths that the server
+  refuses under the allowed root, for example `ENOENT` on a file that does not
+  exist, or `copy_file` refusing a directory. Not every one of the 20 was read.
+  The schema says "any string", the server is right to refuse, and mcpvet
+  cannot know that. Treat `rejected_valid` as a prompt to read, or `-skip` the
+  tool.
+- **mcpvet's client does not complete a multi-round-trip call.** On MCP
+  2026-07-28 a tool can answer `resultType: "input_required"` (it asks the
+  client for roots, say) instead of a result. The go-sdk v1.7.0 client fails to
+  decode that answer, so `server-everything`'s `get-roots-list` shows as a
+  false `rejected_valid`. `-skip get-roots-list` until the SDK handles it.
+- **Tools that need a client capability are not fuzzed.** A tool that answers
+  `-32021` is listed under `not fuzzed` with the capabilities it asked for.
+  Its other cases are not run, so none of its bugs are seen.
 - **A keyword the generator does not model costs an assertion, silently.**
   Accept and reject expectations are also graded by
   [google/jsonschema-go](https://github.com/google/jsonschema-go), and a
