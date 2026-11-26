@@ -159,6 +159,9 @@ func printReport(w io.Writer, r *mcpvet.Report, mode string) {
 	if len(r.TaskOnly) > 0 && mode == "fuzz" {
 		fmt.Fprintf(w, "\nnot fuzzed (execution.taskSupport is required; mcpvet does not speak MCP tasks): %s\n", safeList(r.TaskOnly))
 	}
+	if len(r.NeedsClient) > 0 && mode == "fuzz" {
+		fmt.Fprintf(w, "\nnot fuzzed (the server needs a client capability mcpvet does not declare, MCP error -32021): %s\n", safeList(r.NeedsClient))
+	}
 	if len(r.NotRun) > 0 {
 		fmt.Fprintf(w, "\nnot fuzzed (the server did not start again after the crash: %s): %s\n", r.RestartError, safeList(r.NotRun))
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +41,11 @@ type Report struct {
 	// so cannot be called without MCP tasks, which mcpvet does not speak.
 	// fuzz leaves them out rather than reporting their refusals.
 	TaskOnly []string `json:"task_only,omitempty"`
+	// NeedsClient are tools that answered MCP's -32021
+	// MissingRequiredClientCapabilityError: they need a client capability
+	// (elicitation, sampling, ...) mcpvet's client does not declare, so fuzz
+	// stops calling them. Each entry is "tool (capability, ...)".
+	NeedsClient []string `json:"needs_client,omitempty"`
 	// NotRun are tools fuzz never called because the server crashed and
 	// did not start again (RestartError says why).
 	NotRun       []string `json:"not_run,omitempty"`
@@ -235,6 +241,10 @@ func Vet(ctx context.Context, opts Options) (*Report, error) {
 			if f == nil {
 				continue
 			}
+			if f.Kind == needsClient {
+				report.NeedsClient = append(report.NeedsClient, s.Name+" ("+f.Detail+")")
+				break
+			}
 			if f.Kind == "crash" {
 				dead = true
 				if rest := len(cases) - i - 1; rest > 0 {
@@ -259,6 +269,9 @@ func runCase(ctx context.Context, session *mcp.ClientSession, tool string, c Cas
 			fmt.Sprintf("no response within %s — an agent would stall here", timeout), true}
 	}
 	if err != nil {
+		if caps, ok := missingClientCapability(err); ok {
+			return &Finding{tool, c.Name, needsClient, caps, false}
+		}
 		// Transport death (the session is gone) is a crash; a JSON-RPC error
 		// response means the server is alive and answered, which for a
 		// schema-invalid case is the correct behaviour.
@@ -299,10 +312,41 @@ func sessionDied(ctx context.Context, session *mcp.ClientSession, callErr error)
 		return true
 	}
 	// Ask the server whether it is still there. A live server answers a ping
-	// even when it has just rejected a tool call.
+	// even when it has just rejected a tool call. MCP 2026-07-28 has no ping,
+	// and a server on it answers "Method not found": still an answer, so
+	// still alive.
 	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	return session.Ping(pingCtx, nil) != nil
+	err := session.Ping(pingCtx, nil)
+	var answered *jsonrpc.Error
+	return err != nil && !errors.As(err, &answered)
+}
+
+// needsClient marks a case the server refused with -32021; it never reaches
+// Report.Findings.
+const needsClient = "needs_client"
+
+// missingClientCapability reports whether err is MCP's -32021
+// MissingRequiredClientCapabilityError (schema 2026-07-28), and names the
+// capabilities from its data.requiredCapabilities.
+func missingClientCapability(err error) (string, bool) {
+	var e *jsonrpc.Error
+	if !errors.As(err, &e) || e.Code != -32021 {
+		return "", false
+	}
+	var data struct {
+		RequiredCapabilities map[string]json.RawMessage `json:"requiredCapabilities"`
+	}
+	_ = json.Unmarshal(e.Data, &data)
+	names := make([]string, 0, len(data.RequiredCapabilities))
+	for k := range data.RequiredCapabilities {
+		names = append(names, SafeText(k))
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return "a client capability", true
+	}
+	return strings.Join(names, ", "), true
 }
 
 // decodeSchema normalizes whatever the SDK hands back (typed schema, raw

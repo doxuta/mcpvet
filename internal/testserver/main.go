@@ -300,6 +300,53 @@ func main() {
 		})
 	}
 
+	// MCPVET_NO_PING answers ping with "Method not found", as servers on MCP
+	// 2026-07-28 do (that revision has no ping; server-everything 2.3.1).
+	if os.Getenv("MCPVET_NO_PING") != "" {
+		s.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+			return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+				if method == "ping" {
+					return nil, &jsonrpc.Error{Code: jsonrpc.CodeMethodNotFound, Message: "Method not found"}
+				}
+				return next(ctx, method, req)
+			}
+		})
+	}
+
+	// MCPVET_PROTOCOL_REJECT adds a tool that answers input without a numeric
+	// "n" with a JSON-RPC invalid-params error instead of a tool error.
+	if os.Getenv("MCPVET_PROTOCOL_REJECT") != "" {
+		s.AddTool(&mcp.Tool{
+			Name:        "strict",
+			Description: "Rejects bad input at the protocol level.",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"n": map[string]any{"type": "integer"}},
+				"required":   []any{"n"},
+			},
+		}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			var a map[string]any
+			_ = json.Unmarshal(req.Params.Arguments, &a)
+			if _, ok := a["n"].(float64); !ok {
+				return nil, &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: "n must be a number"}
+			}
+			return text("ok"), nil
+		})
+	}
+
+	// MCPVET_NEEDS_ELICITATION adds a tool that, like server-everything
+	// 2.3.1's trigger-elicitation-request, answers every call from a client
+	// that did not declare elicitation with MCP's -32021
+	// MissingRequiredClientCapabilityError.
+	if os.Getenv("MCPVET_NEEDS_ELICITATION") != "" {
+		mcp.AddTool(s, &mcp.Tool{Name: "ask", Description: "Asks the user a question."},
+			func(ctx context.Context, req *mcp.CallToolRequest, a lookupArgs) (*mcp.CallToolResult, any, error) {
+				return nil, nil, &jsonrpc.Error{Code: -32021,
+					Message: "the request's client capabilities do not declare the required capability",
+					Data:    json.RawMessage(`{"requiredCapabilities":{"elicitation":{"form":{}}}}`)}
+			})
+	}
+
 	// MCPVET_HANG_LIST answers initialize and then never answers tools/list.
 	if os.Getenv("MCPVET_HANG_LIST") != "" {
 		s.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
